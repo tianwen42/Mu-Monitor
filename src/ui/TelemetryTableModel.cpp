@@ -1,5 +1,7 @@
 #include "ui/TelemetryTableModel.h"
 
+#include "utils/TimeUtils.h"
+
 #include <QColor>
 
 TelemetryTableModel::TelemetryTableModel(QObject *parent)
@@ -29,12 +31,12 @@ QVariant TelemetryTableModel::data(const QModelIndex &index, int role) const
         switch (index.column()) {
         case DeviceId:    return record.deviceId;
         case Name:        return record.name;
-        case Status:      return record.status;
+        case Status:      return telemetryStatusDisplayName(record.status);
         case Temperature: return QString::number(record.temperature, 'f', 1) + QStringLiteral(" °C");
         case Pressure:    return QString::number(record.pressure, 'f', 2) + QStringLiteral(" MPa");
         case Speed:       return QString::number(record.speed, 'f', 0) + QStringLiteral(" rpm");
         case Voltage:     return QString::number(record.voltage, 'f', 1) + QStringLiteral(" V");
-        case UpdatedAt:   return record.updatedAt.toString(QStringLiteral("HH:mm:ss"));
+        case UpdatedAt:   return TimeUtils::toLocalIso8601(record.updatedAt);
         default:          return {};
         }
     }
@@ -47,10 +49,13 @@ QVariant TelemetryTableModel::data(const QModelIndex &index, int role) const
     }
 
     if (role == Qt::ForegroundRole) {
-        if (record.status == QStringLiteral("报警")) {
-            return QColor(QStringLiteral("#f87171"));
-        }
-        if (record.status == QStringLiteral("离线")) {
+        switch (record.status) {
+        case TelemetryStatus::Online:
+            return QColor(QStringLiteral("#22c55e"));
+        case TelemetryStatus::Alarm:
+        case TelemetryStatus::Offline:
+            return QColor(QStringLiteral("#ef4444"));
+        case TelemetryStatus::Stopped:
             return QColor(QStringLiteral("#94a3b8"));
         }
     }
@@ -72,7 +77,7 @@ QVariant TelemetryTableModel::headerData(int section, Qt::Orientation orientatio
     case Pressure:    return QStringLiteral("压力");
     case Speed:       return QStringLiteral("转速");
     case Voltage:     return QStringLiteral("电压");
-    case UpdatedAt:   return QStringLiteral("更新时间");
+    case UpdatedAt:   return QStringLiteral("更新时间 (ISO 8601)");
     default:          return {};
     }
 }
@@ -91,6 +96,17 @@ void TelemetryTableModel::upsertRecord(const TelemetryRecord &record)
     endInsertRows();
 }
 
+bool TelemetryTableModel::recordForDevice(const QString &deviceId, TelemetryRecord *record) const
+{
+    const int row = findRow(deviceId);
+    if (row < 0) {
+        return false;
+    }
+    if (record) {
+        *record = m_records.at(row);
+    }
+    return true;
+}
 int TelemetryTableModel::recordCount() const
 {
     return m_records.size();

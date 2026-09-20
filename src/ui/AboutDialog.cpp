@@ -43,7 +43,16 @@ AboutDialog::AboutDialog(QWidget *parent)
     headerLayout->setSpacing(14);
 
     auto *logo = new QLabel(this);
-    const QIcon appIcon = style()->standardIcon(QStyle::SP_ComputerIcon);
+    QIcon appIcon(QStringLiteral(":/icons/mu-monitor.png"));
+    if (appIcon.isNull()) {
+        appIcon = QIcon(QStringLiteral(":/icons/mu-monitor.ico"));
+    }
+    if (appIcon.isNull()) {
+        appIcon = QApplication::windowIcon();
+    }
+    if (appIcon.isNull()) {
+        appIcon = style()->standardIcon(QStyle::SP_ComputerIcon);
+    }
     logo->setPixmap(appIcon.pixmap(64, 64));
     logo->setFixedSize(72, 72);
     logo->setAlignment(Qt::AlignCenter);
@@ -108,7 +117,7 @@ AboutDialog::AboutDialog(QWidget *parent)
         "<li>标准 Qt 主窗口、菜单栏和工具栏</li>"
         "<li>总览、实时监控、历史数据 Tab</li>"
         "<li>设备、告警、日志 Dock 面板</li>"
-        "<li>模拟设备数据与实时趋势图</li>"
+        "<li>模拟设备数据与实时趋势图</li><li>在线绿点、离线红点与心跳状态入库</li><li>登录、连接、采集和告警日志入库</li>"
         "<li>独立设置对话框</li>"
         "</ul>");
     m_tabs->addTab(createTextPage(featuresHtml, QStringLiteral("aboutFeatures")), QStringLiteral("功能"));
@@ -123,8 +132,8 @@ AboutDialog::AboutDialog(QWidget *parent)
         "<tr><td><b>编译器</b></td><td>%2</td></tr>"
         "<tr><td><b>并发</b></td><td>QThread / QtConcurrent / QThreadPool</td></tr>"
         "<tr><td><b>网络</b></td><td>QTcpSocket / Modbus / MQTT（规划中）</td></tr>"
-        "<tr><td><b>存储</b></td><td>SQLite（规划中）</td></tr>"
-        "<tr><td><b>日志</b></td><td>QPlainTextEdit / 结构化日志（规划中）</td></tr>"
+        "<tr><td><b>存储</b></td><td>SQLite 用户、会话、遥测历史、心跳与系统日志</td></tr>"
+        "<tr><td><b>日志</b></td><td>QPlainTextEdit / 结构化日志（规划中）</td></tr><tr><td><b>导出</b></td><td>QXlsx / Excel .xlsx</td></tr>"
         "</table>")
         .arg(QString::fromLatin1(qVersion()), compilerName());
     m_tabs->addTab(createTextPage(techHtml, QStringLiteral("aboutTechnology")), QStringLiteral("技术栈"));
@@ -139,7 +148,7 @@ AboutDialog::AboutDialog(QWidget *parent)
         "<li><a href='https://github.com/pbek/QOwnNotes'>QOwnNotes</a>：中央工作区、菜单、工具栏和 Dock 面板</li>"
         "<li><a href='https://github.com/michpolicht/CuteHMI'>CuteHMI</a>：工业 HMI 插件式架构</li>"
         "<li><a href='https://github.com/IndeemaSoftware/QSimpleScada'>QSimpleScada</a>：SCADA 仪表盘组件</li>"
-        "<li><a href='https://github.com/Serial-Studio/Serial-Studio'>Serial-Studio</a>：现代遥测数据可视化</li>"
+        "<li><a href='https://github.com/Serial-Studio/Serial-Studio'>Serial-Studio</a>：现代遥测数据可视化</li><li><a href='https://github.com/QtExcel/QXlsx'>QXlsx</a>：Excel .xlsx 读写库</li>"
         "</ul>"
         "<p>上述项目仅用于研究界面结构和交互方式，本项目没有直接复制其代码。</p>"
         "<h4>Qt</h4>"

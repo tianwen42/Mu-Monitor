@@ -4,10 +4,15 @@
 
 #include <QApplication>
 #include <QFile>
+#include <QIcon>
 #include <QLocale>
 #include <QMessageBox>
 #include <QSettings>
 #include <QTranslator>
+
+#ifdef Q_OS_WIN
+#include <shobjidl.h>
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -20,7 +25,15 @@ int main(int argc, char *argv[])
     a.setApplicationVersion(QStringLiteral("0.1.0"));
 #endif
     a.setOrganizationName(QStringLiteral("Mu-Monitor"));
+#ifdef Q_OS_WIN
+    SetCurrentProcessExplicitAppUserModelID(L"tianwen42.MuMonitor.Industrial");
+#endif
     QApplication::setQuitOnLastWindowClosed(false);
+    QIcon appIcon(QStringLiteral(":/icons/mu-monitor.png"));
+    if (appIcon.isNull()) {
+        appIcon = QIcon(QStringLiteral(":/icons/mu-monitor.ico"));
+    }
+    a.setWindowIcon(appIcon);
 
     QFile styleFile(QStringLiteral(":/styles/app.qss"));
     if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -69,20 +82,30 @@ int main(int argc, char *argv[])
 
     if (!sessionRestored) {
         LoginDialog loginDialog;
+        loginDialog.setWindowIcon(appIcon);
         if (loginDialog.exec() != QDialog::Accepted) {
+            DatabaseManager::instance().insertLog(
+                QStringLiteral("INFO"), QStringLiteral("application"), QStringLiteral("用户取消登录"));
             DatabaseManager::instance().shutdown();
             return 0;
         }
         currentUser = loginDialog.username();
     }
 
+    DatabaseManager::instance().insertLog(
+        QStringLiteral("INFO"), QStringLiteral("application"),
+        QStringLiteral("应用启动，当前用户：%1").arg(currentUser));
+
     int exitCode = 0;
     {
         MainWindow w(currentUser);
+        w.setWindowIcon(appIcon);
         w.show();
         exitCode = QApplication::exec();
     }
 
+    DatabaseManager::instance().insertLog(
+        QStringLiteral("INFO"), QStringLiteral("application"), QStringLiteral("应用退出"));
     DatabaseManager::instance().shutdown();
     return exitCode;
 }

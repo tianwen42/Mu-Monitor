@@ -1,15 +1,23 @@
 #include "ui/SettingsDialog.h"
 
+#include "database/DatabaseManager.h"
+#include "utils/ExcelExporter.h"
+#include "utils/TimeUtils.h"
+
 #include <QApplication>
+#include <QDateTimeEdit>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QDir>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QSplitter>
@@ -36,6 +44,11 @@ SettingsDialog::SettingsDialog(QWidget *parent)
             this, [this]() {
                 m_statusLabel->setText(QStringLiteral("设置已应用到当前会话"));
             });
+
+    if (QPushButton *applyButton = m_buttonBox->button(QDialogButtonBox::Apply)) {
+        applyButton->setEnabled(false);
+    }
+    m_statusLabel->setText(QStringLiteral("数据导出页已可用；其他设置将在后续阶段接入。"));
 
     m_categoryList->setCurrentRow(0);
 }
@@ -96,6 +109,12 @@ void SettingsDialog::setupPages()
         return page;
     };
 
+    auto disableUntilImplemented = [](const QList<QWidget *> &widgets) {
+        for (QWidget *widget : widgets) {
+            widget->setEnabled(false);
+            widget->setToolTip(QStringLiteral("开发中，将在后续阶段接入。"));
+        }
+    };
     QWidget *generalPage = createFormPage();
     auto *generalForm = qobject_cast<QFormLayout *>(generalPage->layout());
     auto *languageCombo = new QComboBox;
@@ -108,6 +127,7 @@ void SettingsDialog::setupPages()
     generalForm->addRow(QStringLiteral("启动页面"), startPageCombo);
     generalForm->addRow(QString(), autoStartCheck);
     generalForm->addRow(QString(), confirmExitCheck);
+    disableUntilImplemented({languageCombo, startPageCombo, autoStartCheck, confirmExitCheck});
     addPage(QStringLiteral("常规"), appStyle->standardIcon(QStyle::SP_FileDialogDetailedView), generalPage);
 
     QWidget *connectionPage = createFormPage();
@@ -136,6 +156,7 @@ void SettingsDialog::setupPages()
     connectionForm->addRow(QStringLiteral("连接超时"), timeoutSpin);
     connectionForm->addRow(QStringLiteral("重连间隔"), retrySpin);
     connectionForm->addRow(QString(), testButton);
+    disableUntilImplemented({protocolCombo, hostEdit, portSpin, timeoutSpin, retrySpin, testButton});
     addPage(QStringLiteral("连接"), appStyle->standardIcon(QStyle::SP_DriveNetIcon), connectionPage);
 
     QWidget *storagePage = createFormPage();
@@ -161,6 +182,7 @@ void SettingsDialog::setupPages()
     storageForm->addRow(QString(), browseButton);
     storageForm->addRow(QStringLiteral("数据保留"), retentionSpin);
     storageForm->addRow(QString(), autoCleanupCheck);
+    disableUntilImplemented({databasePathEdit, browseButton, retentionSpin, autoCleanupCheck});
     addPage(QStringLiteral("数据存储"), appStyle->standardIcon(QStyle::SP_DriveHDIcon), storagePage);
 
     QWidget *alarmPage = createFormPage();
@@ -179,6 +201,7 @@ void SettingsDialog::setupPages()
     alarmForm->addRow(QString(), popupCheck);
     alarmForm->addRow(QStringLiteral("温度阈值"), temperatureThresholdSpin);
     alarmForm->addRow(QStringLiteral("抖动过滤"), debounceSpin);
+    disableUntilImplemented({soundCheck, popupCheck, temperatureThresholdSpin, debounceSpin});
     addPage(QStringLiteral("告警"), appStyle->standardIcon(QStyle::SP_MessageBoxWarning), alarmPage);
 
     QWidget *appearancePage = createFormPage();
@@ -193,7 +216,136 @@ void SettingsDialog::setupPages()
     appearanceForm->addRow(QStringLiteral("主题"), themeCombo);
     appearanceForm->addRow(QStringLiteral("界面密度"), densityCombo);
     appearanceForm->addRow(QStringLiteral("趋势点数"), chartPointsSpin);
+    disableUntilImplemented({themeCombo, densityCombo, chartPointsSpin});
     addPage(QStringLiteral("外观"), appStyle->standardIcon(QStyle::SP_DesktopIcon), appearancePage);
+
+    auto chooseExportPath = [this](const QString &description, const QString &prefix) {
+        const QString defaultName = QDir::homePath()
+            + QLatin1Char('/')
+            + prefix
+            + QStringLiteral("_")
+            + TimeUtils::toFileTimestamp()
+            + QStringLiteral(".xlsx");
+
+        QString filePath = QFileDialog::getSaveFileName(
+            this,
+            QStringLiteral("导出 %1").arg(description),
+            defaultName,
+            QStringLiteral("Excel Workbook (*.xlsx)"));
+
+        if (!filePath.isEmpty() && !filePath.endsWith(QStringLiteral(".xlsx"), Qt::CaseInsensitive)) {
+            filePath += QStringLiteral(".xlsx");
+        }
+        return filePath;
+    };
+
+    auto *exportPage = new QWidget;
+    auto *exportLayout = new QVBoxLayout(exportPage);
+    exportLayout->setContentsMargins(24, 24, 24, 24);
+    exportLayout->setSpacing(14);
+
+    auto *allDevicesGroup = new QGroupBox(QStringLiteral("全部设备信息"), exportPage);
+    auto *allDevicesLayout = new QVBoxLayout(allDevicesGroup);
+    auto *allDevicesHint = new QLabel(
+        QStringLiteral("导出数据库中每台设备的最新状态和遥测数据。"), allDevicesGroup);
+    allDevicesHint->setWordWrap(true);
+    auto *exportAllButton = new QPushButton(QStringLiteral("导出全部设备信息"), allDevicesGroup);
+    allDevicesLayout->addWidget(allDevicesHint);
+    allDevicesLayout->addWidget(exportAllButton, 0, Qt::AlignLeft);
+    exportLayout->addWidget(allDevicesGroup);
+
+    auto *rangeGroup = new QGroupBox(QStringLiteral("按时间范围导出"), exportPage);
+    auto *rangeForm = new QFormLayout(rangeGroup);
+    rangeForm->setHorizontalSpacing(16);
+    rangeForm->setVerticalSpacing(12);
+
+    auto *startEdit = new QDateTimeEdit(
+        QDateTime::currentDateTime().addDays(-1), rangeGroup);
+    startEdit->setCalendarPopup(true);
+    startEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd'T'HH:mm:ss.zzz"));
+
+    auto *endEdit = new QDateTimeEdit(QDateTime::currentDateTime(), rangeGroup);
+    endEdit->setCalendarPopup(true);
+    endEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd'T'HH:mm:ss.zzz"));
+
+    auto *exportRangeButton = new QPushButton(QStringLiteral("按时间导出 Excel"), rangeGroup);
+    rangeForm->addRow(QStringLiteral("开始时间 (ISO 8601)"), startEdit);
+    rangeForm->addRow(QStringLiteral("结束时间 (ISO 8601)"), endEdit);
+    rangeForm->addRow(QString(), exportRangeButton);
+    exportLayout->addWidget(rangeGroup);
+
+    auto *exportHint = new QLabel(
+        QStringLiteral("时间范围导出会包含范围内所有设备的每条遥测记录，数据量较大时可能需要等待。"),
+        exportPage);
+    exportHint->setWordWrap(true);
+    exportHint->setObjectName(QStringLiteral("exportHintLabel"));
+    exportLayout->addWidget(exportHint);
+    exportLayout->addStretch();
+
+    connect(exportAllButton, &QPushButton::clicked, this, [this, chooseExportPath]() {
+        QString errorMessage;
+        const QList<TelemetryRecord> records =
+            DatabaseManager::instance().latestDeviceRecords(&errorMessage);
+        if (records.isEmpty()) {
+            QMessageBox::information(
+                this,
+                QStringLiteral("暂无数据"),
+                errorMessage.isEmpty()
+                    ? QStringLiteral("数据库中还没有设备遥测数据，请先连接设备并开始采集。")
+                    : errorMessage);
+            return;
+        }
+
+        const QString filePath = chooseExportPath(
+            QStringLiteral("全部设备信息"), QStringLiteral("Mu-Monitor_设备信息"));
+        if (filePath.isEmpty()) {
+            return;
+        }
+
+        if (ExcelExporter::exportRecords(filePath, records, &errorMessage)) {
+            m_statusLabel->setText(QStringLiteral("已导出 %1 台设备：%2").arg(records.size()).arg(filePath));
+        } else {
+            QMessageBox::warning(this, QStringLiteral("导出失败"), errorMessage);
+        }
+    });
+
+    connect(exportRangeButton, &QPushButton::clicked, this, [this, startEdit, endEdit, chooseExportPath]() {
+        if (startEdit->dateTime() >= endEdit->dateTime()) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("时间范围错误"),
+                QStringLiteral("开始时间必须早于结束时间。"));
+            return;
+        }
+
+        QString errorMessage;
+        const QList<TelemetryRecord> records =
+            DatabaseManager::instance().telemetryBetween(
+                startEdit->dateTime(), endEdit->dateTime(), &errorMessage);
+        if (records.isEmpty()) {
+            QMessageBox::information(
+                this,
+                QStringLiteral("暂无数据"),
+                errorMessage.isEmpty()
+                    ? QStringLiteral("所选时间范围内没有遥测记录。")
+                    : errorMessage);
+            return;
+        }
+
+        const QString filePath = chooseExportPath(
+            QStringLiteral("时间范围数据"), QStringLiteral("Mu-Monitor_时间范围数据"));
+        if (filePath.isEmpty()) {
+            return;
+        }
+
+        if (ExcelExporter::exportRecords(filePath, records, &errorMessage)) {
+            m_statusLabel->setText(QStringLiteral("已导出 %1 条记录：%2").arg(records.size()).arg(filePath));
+        } else {
+            QMessageBox::warning(this, QStringLiteral("导出失败"), errorMessage);
+        }
+    });
+
+    addPage(QStringLiteral("数据导出"), appStyle->standardIcon(QStyle::SP_DialogSaveButton), exportPage);
 
     auto *aboutPage = new QWidget;
     auto *aboutLayout = new QVBoxLayout(aboutPage);

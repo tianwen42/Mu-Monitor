@@ -6,6 +6,11 @@ QMainWindow, QWidget {
     font-size: 13px;
 }
 
+QLabel#appLogo {
+    background: transparent;
+    border: 0;
+}
+
 QLabel#appTitle {
     color: #f8fafc;
     font-size: 24px;
@@ -41,6 +46,35 @@ QPushButton {
 QPushButton:hover { background: #388bfd; }
 QPushButton:disabled { background: #334155; color: #94a3b8; }
 
+QFrame#overviewSelectedDevicePanel {
+    background: #111c2e;
+    border: 1px solid #24324a;
+    border-left: 4px solid #38bdf8;
+    border-radius: 10px;
+}
+
+QLabel#overviewDeviceTitle {
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QLabel#overviewDeviceNameLabel {
+    color: #f8fafc;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QLabel#overviewDeviceMetaLabel,
+QLabel#overviewDeviceMetricsLabel {
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+QLabel#overviewDeviceStateLabel {
+    font-size: 14px;
+    font-weight: 700;
+}
 QFrame#devicePanel, QFrame#alarmPanel, QFrame#trendPanel,
 QFrame#tablePanel, QFrame#onlineDevicesCard, QFrame#activeAlarmsCard,
 QFrame#avgTemperatureCard, QFrame#dataPointsCard {
@@ -340,5 +374,79 @@ QTextBrowser#aboutLicense {
 QLabel#currentUserLabel {
     color: #cbd5e1;
     padding: 0 10px;
+    font-weight: 600;
+}
+
+/* Login dialog layout */
+QDialog#loginDialog {
+    background: #0b1220;
+}
+
+QLabel#loginTitle {
+    color: #f8fafc;
+    font-size: 28px;
+    font-weight: 700;
+}
+
+QLabel#loginSubtitle {
+    color: #94a3b8;
+    font-size: 13px;
+}
+
+QFrame#loginSeparator {
+    color: #26354f;
+    background: #26354f;
+    max-height: 1px;
+    border: 0;
+}
+
+QDialogButtonBox QPushButton[secondary="true"] {
+    background: #26354f;
+    color: #e5e7eb;
+}
+
+QDialogButtonBox QPushButton[secondary="true"]:hover {
+    background: #334155;
+}
+
+
+QGroupBox {
+    color: #cbd5e1;
+    border: 1px solid #26354f;
+    border-radius: 7px;
+    margin-top: 12px;
+    padding: 14px 10px 10px 10px;
+    font-weight: 600;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 6px;
+    color: #f8fafc;
+}
+
+QDateTimeEdit {
+    background: #0f172a;
+    color: #e5e7eb;
+    border: 1px solid #26354f;
+    border-radius: 5px;
+    padding: 5px 8px;
+    min-height: 20px;
+}
+
+QLabel#exportHintLabel {
+    color: #94a3b8;
+}
+
+QFrame#deviceControlPanel {
+    background: #111c2e;
+    border: 1px solid #24324a;
+    border-radius: 10px;
+}
+
+QLabel#selectedDeviceLabel {
+    color: #cbd5e1;
     font-weight: 600;
 }
