@@ -1,19 +1,19 @@
 # Git 提交信息规范
 
-项目统一使用 emoji + type + 描述 的提交格式：
+项目统一使用 `emoji + type + 中文描述` 的提交格式。描述部分必须使用中文，type 保持英文约定：
 
 ```text
-<emoji> <type>: <description>
+<emoji> <type>: <中文描述>
 ```
 
 示例：
 
 ```text
-✨ feat: add device alarm state machine
-🐛 fix: prevent duplicate tray exit action
-💄 style: refine monitoring dashboard layout
-📝 docs: document commit message convention
-🎨 refactor: split network and protocol modules
+✨ feat: 添加设备告警状态机
+🐛 fix: 防止托盘退出操作重复创建
+💄 style: 优化监控首页布局
+📝 docs: 记录提交信息规范
+🎨 refactor: 拆分网络与协议模块
 ```
 
 ## 类型映射
@@ -39,13 +39,13 @@
 ## 项目示例
 
 ```text
-🎉 init: complete stage 0 project baseline
-🔧 config: add clean build and deploy workflow
-✨ feat: simplify docks and add 100 simulated devices
-✨ feat: add SQLite login with default admin
-✨ feat: minimize to system tray on close
-🐛 fix: remove toolbar exit action
-✨ feat: show current account and role
-✨ feat: remember login for 30 days
-📝 docs: document commit message convention
+🎉 init: 完成阶段零项目基线
+🔧 config: 添加清理构建与部署流程
+✨ feat: 简化停靠面板并添加一百台模拟设备
+✨ feat: 添加 SQLite 登录与默认管理员
+✨ feat: 关闭窗口时最小化到系统托盘
+🐛 fix: 移除工具栏退出操作
+✨ feat: 显示当前账号与角色
+✨ feat: 支持三十天免登录
+📝 docs: 记录提交信息规范
 ```
