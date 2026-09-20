@@ -3,12 +3,47 @@ project(Mu-Monitor VERSION 0.1.0 LANGUAGES CXX)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql LinguistTools)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+function(mu_enable_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
+
+if(WIN32)
+    set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/resources")
+endif()
+
+add_subdirectory(third_party/QXlsx)
+
 qt_standard_project_setup()
+set(CMAKE_AUTORCC ON)
+include(CTest)
+
+option(BUILD_DEVICE_SIMULATOR "Build the standalone TCP device simulator" ON)
+if(BUILD_DEVICE_SIMULATOR)
+    add_subdirectory(tools/DeviceSimulator)
+endif()
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 qt_add_executable(Mu-Monitor
     WIN32 MACOSX_BUNDLE
     src/main.cpp
+    src/core/BusinessStates.cpp
+    src/core/BusinessStates.h
+    src/core/Device.cpp
+    src/core/Device.h
     src/core/TelemetryRecord.h
+    src/core/TelemetrySample.cpp
+    src/core/TelemetrySample.h
+    src/core/DeviceInfo.h
     src/database/DatabaseManager.cpp
     src/database/DatabaseManager.h
     src/ui/LoginDialog.cpp
@@ -24,8 +59,15 @@ qt_add_executable(Mu-Monitor
     src/ui/SettingsDialog.h
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
+    src/utils/ExcelExporter.cpp
+    src/utils/ExcelExporter.h
+    src/utils/TimeUtils.cpp
+    src/utils/TimeUtils.h
     resources/resources.qrc
+    resources/app.rc
 )
+
+mu_enable_warnings(Mu-Monitor)
 
 target_compile_definitions(Mu-Monitor PRIVATE
     MU_MONITOR_VERSION="${PROJECT_VERSION}"
@@ -45,6 +87,7 @@ target_link_libraries(Mu-Monitor
         Qt::Core
         Qt::Widgets
         Qt::Sql
+        QXlsx::QXlsx
 )
 
 install(TARGETS Mu-Monitor

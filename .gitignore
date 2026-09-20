@@ -86,3 +86,6 @@ CMakeLists.txt.user*
 /dist/
 
 /*.zip
+
+# Local backup files
+*.bak
