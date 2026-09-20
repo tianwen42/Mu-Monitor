@@ -81,6 +81,30 @@ Desktop Qt 6.11.2 MinGW 64-bit
 4. 选择 `Debug` 或 `Release`。
 5. 点击构建，再点击运行。
 
+## 一键清理、编译并部署
+
+Windows 下双击或从终端运行：
+
+```bat
+scripts\build_and_deploy.bat
+```
+
+或者直接运行 PowerShell 脚本：
+
+```powershell
+.\scripts\build_and_deploy.ps1
+```
+
+脚本会执行：
+
+1. 检查 Mu-Monitor 是否正在运行
+2. 清除 `build\script-release`
+3. 从零执行 CMake Release 配置
+4. 编译 Mu-Monitor
+5. 清除旧的 `dist`
+6. 复制新的 exe
+7. 执行 `windeployqt`
+8. 输出最终 exe 和 dist 大小
 ## 命令行构建
 
 先配置 MinGW 和 Qt 环境：
