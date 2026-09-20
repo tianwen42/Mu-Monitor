@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QLocale>
 #include <QMessageBox>
+#include <QSettings>
 #include <QTranslator>
 
 int main(int argc, char *argv[])
@@ -47,13 +48,34 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    LoginDialog loginDialog;
-    if (loginDialog.exec() != QDialog::Accepted) {
-        DatabaseManager::instance().shutdown();
-        return 0;
+    QSettings settings;
+    QString currentUser;
+    bool sessionRestored = false;
+
+    const QString rememberedToken =
+        settings.value(QStringLiteral("auth/rememberToken")).toString();
+    if (!rememberedToken.isEmpty()) {
+        QString sessionUser;
+        QString sessionError;
+        sessionRestored = DatabaseManager::instance().validateRememberSession(
+            rememberedToken, &sessionUser, &sessionError);
+        if (sessionRestored) {
+            currentUser = sessionUser;
+        } else {
+            settings.remove(QStringLiteral("auth/rememberToken"));
+            settings.remove(QStringLiteral("auth/rememberUsername"));
+        }
     }
 
-    const QString currentUser = loginDialog.username();
+    if (!sessionRestored) {
+        LoginDialog loginDialog;
+        if (loginDialog.exec() != QDialog::Accepted) {
+            DatabaseManager::instance().shutdown();
+            return 0;
+        }
+        currentUser = loginDialog.username();
+    }
+
     int exitCode = 0;
     {
         MainWindow w(currentUser);

@@ -110,11 +110,31 @@ bool DatabaseManager::createTables(QString *errorMessage)
         return false;
     }
 
-    return ensureColumn(
-        QStringLiteral("users"),
-        QStringLiteral("role"),
-        QStringLiteral("TEXT NOT NULL DEFAULT 'user'"),
-        errorMessage);
+    if (!ensureColumn(
+            QStringLiteral("users"),
+            QStringLiteral("role"),
+            QStringLiteral("TEXT NOT NULL DEFAULT 'user'"),
+            errorMessage)) {
+        return false;
+    }
+
+    const QString sessionSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS sessions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "username TEXT NOT NULL,"
+        "token_hash TEXT NOT NULL UNIQUE,"
+        "expires_at TEXT NOT NULL,"
+        "created_at TEXT NOT NULL,"
+        "last_used_at TEXT NOT NULL"
+        ")");
+
+    if (!query.exec(sessionSql)) {
+        m_lastError = QStringLiteral("创建 sessions 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
 }
 
 bool DatabaseManager::ensureColumn(const QString &table, const QString &column,
@@ -218,6 +238,115 @@ bool DatabaseManager::validateUser(const QString &username, const QString &passw
     return diff == 0;
 }
 
+bool DatabaseManager::createRememberSession(const QString &username, QString *rawToken,
+                                            QString *errorMessage)
+{
+    cleanupExpiredSessions();
+
+    QSqlQuery remove(m_database);
+    remove.prepare(QStringLiteral("DELETE FROM sessions WHERE username = ?"));
+    remove.addBindValue(username.trimmed());
+    if (!remove.exec()) {
+        m_lastError = QStringLiteral("清理旧登录会话失败：%1").arg(remove.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString token = generateTokenHex();
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    const QDateTime expiresAt = now.addDays(30);
+
+    QSqlQuery insert(m_database);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO sessions (username, token_hash, expires_at, created_at, last_used_at) "
+        "VALUES (?, ?, ?, ?, ?)"));
+    insert.addBindValue(username.trimmed());
+    insert.addBindValue(tokenHash(token));
+    insert.addBindValue(expiresAt.toString(Qt::ISODate));
+    insert.addBindValue(now.toString(Qt::ISODate));
+    insert.addBindValue(now.toString(Qt::ISODate));
+
+    if (!insert.exec()) {
+        m_lastError = QStringLiteral("创建免登录会话失败：%1").arg(insert.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    if (rawToken) *rawToken = token;
+    return true;
+}
+
+bool DatabaseManager::validateRememberSession(const QString &rawToken, QString *username,
+                                              QString *errorMessage)
+{
+    if (!m_initialized && !initialize()) {
+        return false;
+    }
+
+    if (rawToken.trimmed().isEmpty()) {
+        return false;
+    }
+
+    cleanupExpiredSessions();
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT username, expires_at FROM sessions WHERE token_hash = ?"));
+    query.addBindValue(tokenHash(rawToken.trimmed()));
+
+    if (!query.exec() || !query.next()) {
+        m_lastError = QStringLiteral("未找到有效的免登录会话");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString storedUser = query.value(0).toString();
+    const QDateTime expiresAt = QDateTime::fromString(query.value(1).toString(), Qt::ISODate);
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+
+    if (!expiresAt.isValid() || expiresAt <= now) {
+        revokeRememberSession(rawToken);
+        m_lastError = QStringLiteral("免登录会话已过期");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery update(m_database);
+    update.prepare(QStringLiteral(
+        "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE token_hash = ?"));
+    update.addBindValue(now.toString(Qt::ISODate));
+    update.addBindValue(now.addDays(30).toString(Qt::ISODate));
+    update.addBindValue(tokenHash(rawToken.trimmed()));
+    update.exec();
+
+    if (username) *username = storedUser;
+    return true;
+}
+
+void DatabaseManager::revokeRememberSession(const QString &rawToken)
+{
+    if (!m_initialized || rawToken.trimmed().isEmpty()) {
+        return;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("DELETE FROM sessions WHERE token_hash = ?"));
+    query.addBindValue(tokenHash(rawToken.trimmed()));
+    query.exec();
+}
+
+void DatabaseManager::cleanupExpiredSessions()
+{
+    if (!m_initialized && !initialize()) {
+        return;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("DELETE FROM sessions WHERE expires_at <= ?"));
+    query.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    query.exec();
+}
+
 QString DatabaseManager::roleForUser(const QString &username)
 {
     if (!m_initialized && !initialize()) {
@@ -267,4 +396,19 @@ QString DatabaseManager::generateSaltHex() const
         salt[i] = static_cast<char>(QRandomGenerator::global()->bounded(256));
     }
     return QString::fromLatin1(salt.toHex());
+}
+
+QString DatabaseManager::generateTokenHex() const
+{
+    QByteArray token(32, '\0');
+    for (int i = 0; i < token.size(); ++i) {
+        token[i] = static_cast<char>(QRandomGenerator::system()->bounded(256));
+    }
+    return QString::fromLatin1(token.toHex());
+}
+
+QString DatabaseManager::tokenHash(const QString &rawToken) const
+{
+    return QString::fromLatin1(
+        QCryptographicHash::hash(rawToken.toUtf8(), QCryptographicHash::Sha256).toHex());
 }

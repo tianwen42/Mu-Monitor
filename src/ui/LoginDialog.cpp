@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSettings>
 #include <QVBoxLayout>
 
 LoginDialog::LoginDialog(QWidget *parent)
@@ -45,7 +46,10 @@ LoginDialog::LoginDialog(QWidget *parent)
     rootLayout->addLayout(form);
 
     m_showPasswordCheck = new QCheckBox(QStringLiteral("显示密码"), this);
+    m_rememberCheck = new QCheckBox(QStringLiteral("30 天内记住登录状态"), this);
+    m_rememberCheck->setChecked(true);
     rootLayout->addWidget(m_showPasswordCheck);
+    rootLayout->addWidget(m_rememberCheck);
     connect(m_showPasswordCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_passwordEdit->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
     });
@@ -82,6 +86,28 @@ void LoginDialog::attemptLogin()
         m_passwordEdit->clear();
         m_passwordEdit->setFocus();
         return;
+    }
+
+    QSettings settings;
+    if (m_rememberCheck->isChecked()) {
+        QString token;
+        QString errorMessage;
+        if (DatabaseManager::instance().createRememberSession(name, &token, &errorMessage)) {
+            settings.setValue(QStringLiteral("auth/rememberToken"), token);
+            settings.setValue(QStringLiteral("auth/rememberUsername"), name);
+        } else {
+            settings.remove(QStringLiteral("auth/rememberToken"));
+            settings.remove(QStringLiteral("auth/rememberUsername"));
+            QMessageBox::warning(
+                this,
+                QStringLiteral("登录成功"),
+                QStringLiteral("登录成功，但未能创建免登录会话：%1").arg(errorMessage));
+        }
+    } else {
+        const QString oldToken = settings.value(QStringLiteral("auth/rememberToken")).toString();
+        DatabaseManager::instance().revokeRememberSession(oldToken);
+        settings.remove(QStringLiteral("auth/rememberToken"));
+        settings.remove(QStringLiteral("auth/rememberUsername"));
     }
 
     accept();
