@@ -19,6 +19,7 @@ int main(int argc, char *argv[])
     a.setApplicationVersion(QStringLiteral("0.1.0"));
 #endif
     a.setOrganizationName(QStringLiteral("Mu-Monitor"));
+    QApplication::setQuitOnLastWindowClosed(false);
 
     QFile styleFile(QStringLiteral(":/styles/app.qss"));
     if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {

@@ -11,6 +11,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QCloseEvent>
 #include <QDateTime>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -31,6 +32,7 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QSystemTrayIcon>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -45,6 +47,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupUi();
     setupDocks();
     setupToolBar();
+    setupTrayIcon();
     setupConnections();
     setupDemoDevices();
     setConnectionState(false);
@@ -53,7 +56,30 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    if (m_trayIcon) {
+        m_trayIcon->hide();
+    }
     delete ui;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_forceQuit || !QSystemTrayIcon::isSystemTrayAvailable()) {
+        event->accept();
+        return;
+    }
+
+    event->ignore();
+    hide();
+
+    if (m_trayIcon && !m_trayMessageShown) {
+        m_trayIcon->showMessage(
+            QStringLiteral("Mu-Monitor"),
+            QStringLiteral("程序已隐藏到系统托盘。可通过托盘菜单重新打开或退出。"),
+            QSystemTrayIcon::Information,
+            3500);
+        m_trayMessageShown = true;
+    }
 }
 
 void MainWindow::setupUi()
@@ -186,6 +212,63 @@ void MainWindow::setupToolBar()
         dialog.exec();
     });
     toolBar->addAction(aboutAction);
+
+    toolBar->addSeparator();
+    QAction *exitAction = new QAction(
+        style()->standardIcon(QStyle::SP_DialogCloseButton), QStringLiteral("退出"), this);
+    connect(exitAction, &QAction::triggered, this, [this]() {
+        m_forceQuit = true;
+        close();
+    });
+    toolBar->addAction(exitAction);
+}
+
+void MainWindow::setupTrayIcon()
+{
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+
+    const QIcon trayIcon = style()->standardIcon(QStyle::SP_ComputerIcon);
+    setWindowIcon(trayIcon);
+
+    m_trayIcon = new QSystemTrayIcon(trayIcon, this);
+    m_trayIcon->setToolTip(QStringLiteral("Mu-Monitor - 工业设备监控与告警平台"));
+
+    auto *trayMenu = new QMenu(this);
+
+    QAction *showAction = trayMenu->addAction(QStringLiteral("显示主界面"));
+    connect(showAction, &QAction::triggered, this, [this]() {
+        showNormal();
+        raise();
+        activateWindow();
+    });
+
+    QAction *connectAction = trayMenu->addAction(QStringLiteral("连接/断开设备"));
+    connect(connectAction, &QAction::triggered, ui->connectButton, &QPushButton::click);
+
+    QAction *collectAction = trayMenu->addAction(QStringLiteral("开始/暂停采集"));
+    connect(collectAction, &QAction::triggered, ui->startButton, &QPushButton::click);
+
+    trayMenu->addSeparator();
+
+    QAction *exitAction = trayMenu->addAction(QStringLiteral("退出 Mu-Monitor"));
+    connect(exitAction, &QAction::triggered, this, [this]() {
+        m_forceQuit = true;
+        qApp->quit();
+    });
+
+    m_trayIcon->setContextMenu(trayMenu);
+    connect(m_trayIcon, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason reason) {
+                if (reason == QSystemTrayIcon::Trigger
+                    || reason == QSystemTrayIcon::DoubleClick) {
+                    showNormal();
+                    raise();
+                    activateWindow();
+                }
+            });
+    m_trayIcon->show();
 }
 
 void MainWindow::setupMenus()

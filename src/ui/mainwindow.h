@@ -7,7 +7,9 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
+class QCloseEvent;
 class QPlainTextEdit;
+class QSystemTrayIcon;
 class QTimer;
 class TelemetryTableModel;
 class TrendChartWidget;
@@ -20,6 +22,9 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void onConnectClicked();
     void onStartClicked();
@@ -30,6 +35,7 @@ private:
     void setupUi();
     void setupDocks();
     void setupToolBar();
+    void setupTrayIcon();
     void setupMenus();
     void setupConnections();
     void setupDemoDevices();
@@ -42,6 +48,9 @@ private:
     TrendChartWidget *m_trendChart = nullptr;
     QTimer *m_timer = nullptr;
     QPlainTextEdit *m_logOutput = nullptr;
+    QSystemTrayIcon *m_trayIcon = nullptr;
+    bool m_forceQuit = false;
+    bool m_trayMessageShown = false;
     QStringList m_deviceIds;
     QStringList m_deviceNames;
     bool m_connected = false;
