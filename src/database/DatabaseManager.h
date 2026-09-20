@@ -1,5 +1,11 @@
 #pragma once
 
+#include "core/DeviceInfo.h"
+#include "core/HeartbeatRecord.h"
+#include "core/TelemetryRecord.h"
+
+#include <QDateTime>
+#include <QList>
 #include <QSqlDatabase>
 #include <QString>
 
@@ -18,6 +24,38 @@ public:
                                  QString *errorMessage = nullptr);
     void revokeRememberSession(const QString &rawToken);
     void cleanupExpiredSessions();
+    bool insertTelemetryRecords(const QList<TelemetryRecord> &records,
+                                QString *errorMessage = nullptr);
+    QList<TelemetryRecord> latestDeviceRecords(QString *errorMessage = nullptr);
+    qint64 telemetryRecordCount(QString *errorMessage = nullptr);
+    QList<HeartbeatRecord> latestHeartbeatRecords(QString *errorMessage = nullptr);
+    QList<TelemetryRecord> recentTelemetryRecords(int limit,
+                                                   const QString &deviceId = QString(),
+                                                   QString *errorMessage = nullptr);
+    QList<TelemetryRecord> telemetryHistory(const QDateTime &start,
+                                            const QDateTime &end,
+                                            const QString &deviceId = QString(),
+                                            int limit = 2000,
+                                            QString *errorMessage = nullptr);
+    QList<TelemetryRecord> telemetryBetween(const QDateTime &start,
+                                            const QDateTime &end,
+                                            QString *errorMessage = nullptr);
+    QList<DeviceInfo> deviceInfos(QString *errorMessage = nullptr);
+    bool ensureDeviceInfos(const QList<DeviceInfo> &devices,
+                           QString *errorMessage = nullptr);
+    bool updateDeviceInfo(const DeviceInfo &device,
+                          QString *errorMessage = nullptr);
+    bool insertAlarmRecord(const QString &deviceId,
+                           const QString &level,
+                           const QString &message,
+                           QString *errorMessage = nullptr);
+    QList<AlarmRecord> alarmHistoryForDevice(const QString &deviceId,
+                                             int limit = 500,
+                                             QString *errorMessage = nullptr);
+    bool insertHeartbeatRecords(const QList<HeartbeatRecord> &records,
+                                QString *errorMessage = nullptr);
+    bool insertLog(const QString &level, const QString &source,
+                   const QString &message, QString *errorMessage = nullptr);
     QString databasePath() const;
     QString lastError() const;
 
@@ -29,6 +67,8 @@ private:
     ~DatabaseManager();
 
     bool createTables(QString *errorMessage);
+    bool normalizeTimestampStorage(QString *errorMessage);
+    bool normalizeTelemetryStatusStorage(QString *errorMessage);
     bool ensureColumn(const QString &table, const QString &column,
                       const QString &definition, QString *errorMessage);
     bool ensureDefaultUser(QString *errorMessage);

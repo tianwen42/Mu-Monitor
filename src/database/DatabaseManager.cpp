@@ -1,5 +1,7 @@
 #include "database/DatabaseManager.h"
 
+#include "utils/TimeUtils.h"
+
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -70,6 +72,12 @@ bool DatabaseManager::initialize(QString *errorMessage)
     if (!createTables(errorMessage)) {
         return false;
     }
+    if (!normalizeTimestampStorage(errorMessage)) {
+        return false;
+    }
+    if (!normalizeTelemetryStatusStorage(errorMessage)) {
+        return false;
+    }
     if (!ensureDefaultUser(errorMessage)) {
         return false;
     }
@@ -134,9 +142,265 @@ bool DatabaseManager::createTables(QString *errorMessage)
         return false;
     }
 
+    const QString telemetrySql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS telemetry ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "device_id TEXT NOT NULL,"
+        "name TEXT NOT NULL,"
+        "status TEXT NOT NULL,"
+        "temperature REAL NOT NULL,"
+        "pressure REAL NOT NULL,"
+        "speed REAL NOT NULL,"
+        "voltage REAL NOT NULL,"
+        "recorded_at TEXT NOT NULL"
+        ")");
+
+    if (!query.exec(telemetrySql)) {
+        m_lastError = QStringLiteral("创建 telemetry 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString statusSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS device_status ("
+        "device_id TEXT PRIMARY KEY,"
+        "online INTEGER NOT NULL,"
+        "collecting INTEGER NOT NULL DEFAULT 1,"
+        "heartbeat_at TEXT NOT NULL,"
+        "latency_ms INTEGER NOT NULL"
+        ")");
+    if (!query.exec(statusSql)) {
+        m_lastError = QStringLiteral("创建 device_status 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (!ensureColumn(QStringLiteral("device_status"), QStringLiteral("collecting"),
+                      QStringLiteral("INTEGER NOT NULL DEFAULT 1"), errorMessage)) {
+        return false;
+    }
+
+    const QString logSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS system_logs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "level TEXT NOT NULL,"
+        "source TEXT NOT NULL,"
+        "message TEXT NOT NULL,"
+        "created_at TEXT NOT NULL"
+        ")");
+    if (!query.exec(logSql)) {
+        m_lastError = QStringLiteral("创建 system_logs 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString deviceSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS devices ("
+        "device_id TEXT PRIMARY KEY,"
+        "name TEXT NOT NULL,"
+        "model TEXT NOT NULL DEFAULT '',"
+        "location TEXT NOT NULL DEFAULT '',"
+        "ip_address TEXT NOT NULL DEFAULT '',"
+        "protocol TEXT NOT NULL DEFAULT '',"
+        "notes TEXT NOT NULL DEFAULT '',"
+        "updated_at TEXT NOT NULL"
+        ")");
+    if (!query.exec(deviceSql)) {
+        m_lastError = QStringLiteral("创建 devices 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString alarmSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS alarms ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "device_id TEXT NOT NULL,"
+        "level TEXT NOT NULL,"
+        "message TEXT NOT NULL,"
+        "occurred_at TEXT NOT NULL"
+        ")");
+    if (!query.exec(alarmSql)) {
+        m_lastError = QStringLiteral("创建 alarms 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    const QString metaSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS app_meta ("
+        "key TEXT PRIMARY KEY,"
+        "value TEXT NOT NULL"
+        ")");
+    if (!query.exec(metaSql)) {
+        m_lastError = QStringLiteral("创建 app_meta 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QStringList indexes = {
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_telemetry_recorded_at ON telemetry(recorded_at)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_telemetry_device_time ON telemetry(device_id, recorded_at)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_system_logs_created_at ON system_logs(created_at)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_alarms_device_time ON alarms(device_id, occurred_at)"),
+    };
+    for (const QString &indexSql : indexes) {
+        if (!query.exec(indexSql)) {
+            m_lastError = QStringLiteral("创建 telemetry 索引失败：%1").arg(query.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
     return true;
 }
 
+bool DatabaseManager::normalizeTimestampStorage(QString *errorMessage)
+{
+    const QString migrationKey = QStringLiteral("timestamp_iso8601_ms_utc_v2");
+
+    QSqlQuery check(m_database);
+    check.prepare(QStringLiteral("SELECT 1 FROM app_meta WHERE key = ?"));
+    check.addBindValue(migrationKey);
+    if (!check.exec()) {
+        m_lastError = QStringLiteral("检查时间戳迁移状态失败：%1").arg(check.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (check.next()) {
+        return true;
+    }
+
+    if (!m_database.transaction()) {
+        m_lastError = QStringLiteral("无法开始时间戳迁移事务：%1").arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QList<QPair<QString, QString>> timestampColumns = {
+        {QStringLiteral("users"), QStringLiteral("created_at")},
+        {QStringLiteral("sessions"), QStringLiteral("expires_at")},
+        {QStringLiteral("sessions"), QStringLiteral("created_at")},
+        {QStringLiteral("sessions"), QStringLiteral("last_used_at")},
+        {QStringLiteral("telemetry"), QStringLiteral("recorded_at")},
+        {QStringLiteral("device_status"), QStringLiteral("heartbeat_at")},
+        {QStringLiteral("system_logs"), QStringLiteral("created_at")},
+        {QStringLiteral("devices"), QStringLiteral("updated_at")},
+        {QStringLiteral("alarms"), QStringLiteral("occurred_at")},
+    };
+
+    const QString standardTimestampPattern = QStringLiteral("____-__-__T__:__:__.___Z");
+
+    for (const auto &timestampColumn : timestampColumns) {
+        QSqlQuery select(m_database);
+        const QString selectSql = QStringLiteral(
+            "SELECT rowid, %1 FROM %2 WHERE %1 NOT LIKE ?")
+            .arg(timestampColumn.second, timestampColumn.first);
+        select.prepare(selectSql);
+        select.addBindValue(standardTimestampPattern);
+        if (!select.exec()) {
+            m_database.rollback();
+            m_lastError = QStringLiteral("读取 %1.%2 历史时间戳失败：%3")
+                              .arg(timestampColumn.first, timestampColumn.second,
+                                   select.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+
+        QList<QPair<QVariant, QString>> legacyRows;
+        while (select.next()) {
+            legacyRows.append({select.value(0), select.value(1).toString()});
+        }
+
+        for (const auto &legacyRow : legacyRows) {
+            const QDateTime timestamp = TimeUtils::fromIso8601(legacyRow.second);
+            if (!timestamp.isValid()) {
+                continue;
+            }
+
+            QSqlQuery update(m_database);
+            update.prepare(QStringLiteral("UPDATE %1 SET %2 = ? WHERE rowid = ?")
+                               .arg(timestampColumn.first, timestampColumn.second));
+            update.addBindValue(TimeUtils::toUtcIso8601(timestamp));
+            update.addBindValue(legacyRow.first);
+            if (!update.exec()) {
+                m_database.rollback();
+                m_lastError = QStringLiteral("迁移 %1.%2 时间戳失败：%3")
+                                  .arg(timestampColumn.first, timestampColumn.second,
+                                       update.lastError().text());
+                if (errorMessage) *errorMessage = m_lastError;
+                return false;
+            }
+        }
+    }
+
+    QSqlQuery marker(m_database);
+    marker.prepare(QStringLiteral("INSERT INTO app_meta (key, value) VALUES (?, ?)"));
+    marker.addBindValue(migrationKey);
+    marker.addBindValue(TimeUtils::toUtcIso8601());
+    if (!marker.exec()) {
+        m_database.rollback();
+        m_lastError = QStringLiteral("记录时间戳迁移状态失败：%1").arg(marker.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    if (!m_database.commit()) {
+        m_database.rollback();
+        m_lastError = QStringLiteral("提交时间戳迁移失败：%1").arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
+}
+
+bool DatabaseManager::normalizeTelemetryStatusStorage(QString *errorMessage)
+{
+    const QString migrationKey = QStringLiteral("telemetry_status_codes_v1");
+
+    QSqlQuery check(m_database);
+    check.prepare(QStringLiteral("SELECT 1 FROM app_meta WHERE key = ?"));
+    check.addBindValue(migrationKey);
+    if (!check.exec()) {
+        m_lastError = QStringLiteral("检查遥测状态迁移状态失败：%1").arg(check.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (check.next()) {
+        return true;
+    }
+
+    const QList<QPair<QString, QString>> mappings = {
+        {QStringLiteral("在线"), QStringLiteral("online")},
+        {QStringLiteral("离线"), QStringLiteral("offline")},
+        {QStringLiteral("报警"), QStringLiteral("alarm")},
+        {QStringLiteral("已停止"), QStringLiteral("stopped")},
+        {QStringLiteral("采集中"), QStringLiteral("online")},
+        {QStringLiteral("未连接"), QStringLiteral("offline")},
+    };
+
+    for (const auto &mapping : mappings) {
+        QSqlQuery update(m_database);
+        update.prepare(QStringLiteral("UPDATE telemetry SET status = ? WHERE status = ?"));
+        update.addBindValue(mapping.second);
+        update.addBindValue(mapping.first);
+        if (!update.exec()) {
+            m_lastError = QStringLiteral("迁移遥测状态 %1 失败：%2")
+                              .arg(mapping.first, update.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    QSqlQuery marker(m_database);
+    marker.prepare(QStringLiteral("INSERT INTO app_meta (key, value) VALUES (?, ?)"));
+    marker.addBindValue(migrationKey);
+    marker.addBindValue(TimeUtils::toUtcIso8601());
+    if (!marker.exec()) {
+        m_lastError = QStringLiteral("记录遥测状态迁移状态失败：%1").arg(marker.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
+}
 bool DatabaseManager::ensureColumn(const QString &table, const QString &column,
                                    const QString &definition, QString *errorMessage)
 {
@@ -199,7 +463,7 @@ bool DatabaseManager::ensureDefaultUser(QString *errorMessage)
     insert.addBindValue(hashHex);
     insert.addBindValue(saltHex);
     insert.addBindValue(QStringLiteral("admin"));
-    insert.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+    insert.addBindValue(TimeUtils::toUtcIso8601());
 
     if (!insert.exec()) {
         m_lastError = QStringLiteral("创建默认账号失败：%1").arg(insert.lastError().text());
@@ -262,9 +526,9 @@ bool DatabaseManager::createRememberSession(const QString &username, QString *ra
         "VALUES (?, ?, ?, ?, ?)"));
     insert.addBindValue(username.trimmed());
     insert.addBindValue(tokenHash(token));
-    insert.addBindValue(expiresAt.toString(Qt::ISODate));
-    insert.addBindValue(now.toString(Qt::ISODate));
-    insert.addBindValue(now.toString(Qt::ISODate));
+    insert.addBindValue(TimeUtils::toUtcIso8601(expiresAt));
+    insert.addBindValue(TimeUtils::toUtcIso8601(now));
+    insert.addBindValue(TimeUtils::toUtcIso8601(now));
 
     if (!insert.exec()) {
         m_lastError = QStringLiteral("创建免登录会话失败：%1").arg(insert.lastError().text());
@@ -301,7 +565,7 @@ bool DatabaseManager::validateRememberSession(const QString &rawToken, QString *
     }
 
     const QString storedUser = query.value(0).toString();
-    const QDateTime expiresAt = QDateTime::fromString(query.value(1).toString(), Qt::ISODate);
+    const QDateTime expiresAt = TimeUtils::fromIso8601(query.value(1).toString());
     const QDateTime now = QDateTime::currentDateTimeUtc();
 
     if (!expiresAt.isValid() || expiresAt <= now) {
@@ -314,8 +578,8 @@ bool DatabaseManager::validateRememberSession(const QString &rawToken, QString *
     QSqlQuery update(m_database);
     update.prepare(QStringLiteral(
         "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE token_hash = ?"));
-    update.addBindValue(now.toString(Qt::ISODate));
-    update.addBindValue(now.addDays(30).toString(Qt::ISODate));
+    update.addBindValue(TimeUtils::toUtcIso8601(now));
+    update.addBindValue(TimeUtils::toUtcIso8601(now.addDays(30)));
     update.addBindValue(tokenHash(rawToken.trimmed()));
     update.exec();
 
@@ -343,8 +607,478 @@ void DatabaseManager::cleanupExpiredSessions()
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("DELETE FROM sessions WHERE expires_at <= ?"));
-    query.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    query.addBindValue(TimeUtils::toUtcIso8601());
     query.exec();
+}
+
+bool DatabaseManager::insertTelemetryRecords(const QList<TelemetryRecord> &records,
+                                             QString *errorMessage)
+{
+    if (records.isEmpty()) {
+        return true;
+    }
+
+    if (!m_database.transaction()) {
+        m_lastError = QStringLiteral("无法开始遥测数据事务：%1").arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO telemetry ("
+        "device_id, name, status, temperature, pressure, speed, voltage, recorded_at"
+        ") VALUES (:device_id, :name, :status, :temperature, :pressure, :speed, :voltage, :recorded_at)"));
+
+    for (const TelemetryRecord &record : records) {
+        const QDateTime timestamp = record.updatedAt.isValid()
+            ? record.updatedAt.toUTC()
+            : QDateTime::currentDateTimeUtc();
+
+        query.bindValue(QStringLiteral(":device_id"), record.deviceId);
+        query.bindValue(QStringLiteral(":name"), record.name);
+        query.bindValue(QStringLiteral(":status"), telemetryStatusCode(record.status));
+        query.bindValue(QStringLiteral(":temperature"), record.temperature);
+        query.bindValue(QStringLiteral(":pressure"), record.pressure);
+        query.bindValue(QStringLiteral(":speed"), record.speed);
+        query.bindValue(QStringLiteral(":voltage"), record.voltage);
+        query.bindValue(QStringLiteral(":recorded_at"), TimeUtils::toUtcIso8601(timestamp));
+
+        if (!query.exec()) {
+            m_database.rollback();
+            m_lastError = QStringLiteral("写入遥测数据失败：%1").arg(query.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    if (!m_database.commit()) {
+        m_database.rollback();
+        m_lastError = QStringLiteral("提交遥测数据失败：%1").arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
+}
+
+QList<TelemetryRecord> DatabaseManager::latestDeviceRecords(QString *errorMessage)
+{
+    QList<TelemetryRecord> records;
+
+    QSqlQuery query(m_database);
+    const QString sql = QStringLiteral(
+        "SELECT t.device_id, t.name, t.status, t.temperature, t.pressure, "
+        "t.speed, t.voltage, t.recorded_at "
+        "FROM telemetry t "
+        "WHERE t.rowid = ("
+        "  SELECT t2.rowid FROM telemetry t2 "
+        "  WHERE t2.device_id = t.device_id "
+        "  ORDER BY t2.recorded_at DESC, t2.rowid DESC LIMIT 1"
+        ") "
+        "ORDER BY t.device_id");
+
+    if (!query.exec(sql)) {
+        m_lastError = QStringLiteral("查询全部设备失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return records;
+    }
+
+    while (query.next()) {
+        TelemetryRecord record;
+        record.deviceId = query.value(0).toString();
+        record.name = query.value(1).toString();
+        record.status = telemetryStatusFromString(query.value(2).toString());
+        record.temperature = query.value(3).toDouble();
+        record.pressure = query.value(4).toDouble();
+        record.speed = query.value(5).toDouble();
+        record.voltage = query.value(6).toDouble();
+        record.updatedAt = TimeUtils::fromIso8601(query.value(7).toString());
+        records.append(record);
+    }
+
+    return records;
+}
+
+qint64 DatabaseManager::telemetryRecordCount(QString *errorMessage)
+{
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM telemetry")) || !query.next()) {
+        m_lastError = QStringLiteral("统计遥测历史数量失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return 0;
+    }
+    return query.value(0).toLongLong();
+}
+
+QList<HeartbeatRecord> DatabaseManager::latestHeartbeatRecords(QString *errorMessage)
+{
+    QList<HeartbeatRecord> records;
+
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral(
+            "SELECT device_id, online, collecting, heartbeat_at, latency_ms "
+            "FROM device_status ORDER BY device_id"))) {
+        m_lastError = QStringLiteral("查询设备心跳状态失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return records;
+    }
+
+    while (query.next()) {
+        HeartbeatRecord record;
+        record.deviceId = query.value(0).toString();
+        record.online = query.value(1).toInt() != 0;
+        record.collecting = query.value(2).toInt() != 0;
+        record.heartbeatAt = TimeUtils::fromIso8601(query.value(3).toString());
+        record.latencyMs = query.value(4).toInt();
+        records.append(record);
+    }
+
+    return records;
+}
+QList<TelemetryRecord> DatabaseManager::recentTelemetryRecords(int limit,
+                                                              const QString &deviceId,
+                                                              QString *errorMessage)
+{
+    QList<TelemetryRecord> records;
+    if (limit <= 0) {
+        return records;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT device_id, name, status, temperature, pressure, speed, voltage, recorded_at "
+        "FROM telemetry WHERE (? = '' OR device_id = ?) "
+        "ORDER BY recorded_at DESC LIMIT ?"));
+    query.addBindValue(deviceId);
+    query.addBindValue(deviceId);
+    query.addBindValue(limit);
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("查询最近遥测历史失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return records;
+    }
+
+    while (query.next()) {
+        TelemetryRecord record;
+        record.deviceId = query.value(0).toString();
+        record.name = query.value(1).toString();
+        record.status = telemetryStatusFromString(query.value(2).toString());
+        record.temperature = query.value(3).toDouble();
+        record.pressure = query.value(4).toDouble();
+        record.speed = query.value(5).toDouble();
+        record.voltage = query.value(6).toDouble();
+        record.updatedAt = TimeUtils::fromIso8601(query.value(7).toString());
+        records.append(record);
+    }
+
+    return records;
+}
+
+QList<TelemetryRecord> DatabaseManager::telemetryHistory(const QDateTime &start,
+                                                        const QDateTime &end,
+                                                        const QString &deviceId,
+                                                        int limit,
+                                                        QString *errorMessage)
+{
+    QList<TelemetryRecord> records;
+    if (!start.isValid() || !end.isValid() || start > end || limit <= 0) {
+        return records;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT device_id, name, status, temperature, pressure, speed, voltage, recorded_at "
+        "FROM telemetry WHERE recorded_at >= ? AND recorded_at <= ? "
+        "AND (? = '' OR device_id = ?) "
+        "ORDER BY recorded_at DESC LIMIT ?"));
+    query.addBindValue(TimeUtils::toUtcIso8601(start));
+    query.addBindValue(TimeUtils::toUtcIso8601(end));
+    query.addBindValue(deviceId);
+    query.addBindValue(deviceId);
+    query.addBindValue(limit);
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("按条件查询遥测历史失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return records;
+    }
+
+    while (query.next()) {
+        TelemetryRecord record;
+        record.deviceId = query.value(0).toString();
+        record.name = query.value(1).toString();
+        record.status = telemetryStatusFromString(query.value(2).toString());
+        record.temperature = query.value(3).toDouble();
+        record.pressure = query.value(4).toDouble();
+        record.speed = query.value(5).toDouble();
+        record.voltage = query.value(6).toDouble();
+        record.updatedAt = TimeUtils::fromIso8601(query.value(7).toString());
+        records.append(record);
+    }
+
+    return records;
+}
+QList<TelemetryRecord> DatabaseManager::telemetryBetween(const QDateTime &start,
+                                                         const QDateTime &end,
+                                                         QString *errorMessage)
+{
+    QList<TelemetryRecord> records;
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT device_id, name, status, temperature, pressure, speed, voltage, recorded_at "
+        "FROM telemetry WHERE recorded_at >= ? AND recorded_at <= ? "
+        "ORDER BY recorded_at, device_id"));
+    query.addBindValue(TimeUtils::toUtcIso8601(start));
+    query.addBindValue(TimeUtils::toUtcIso8601(end));
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("按时间查询遥测数据失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return records;
+    }
+
+    while (query.next()) {
+        TelemetryRecord record;
+        record.deviceId = query.value(0).toString();
+        record.name = query.value(1).toString();
+        record.status = telemetryStatusFromString(query.value(2).toString());
+        record.temperature = query.value(3).toDouble();
+        record.pressure = query.value(4).toDouble();
+        record.speed = query.value(5).toDouble();
+        record.voltage = query.value(6).toDouble();
+        record.updatedAt = TimeUtils::fromIso8601(query.value(7).toString());
+        records.append(record);
+    }
+
+    return records;
+}
+
+QList<DeviceInfo> DatabaseManager::deviceInfos(QString *errorMessage)
+{
+    QList<DeviceInfo> devices;
+
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral(
+            "SELECT device_id, name, model, location, ip_address, protocol, notes "
+            "FROM devices ORDER BY device_id"))) {
+        m_lastError = QStringLiteral("查询设备信息失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return devices;
+    }
+
+    while (query.next()) {
+        DeviceInfo device;
+        device.deviceId = query.value(0).toString();
+        device.name = query.value(1).toString();
+        device.model = query.value(2).toString();
+        device.location = query.value(3).toString();
+        device.ipAddress = query.value(4).toString();
+        device.protocol = query.value(5).toString();
+        device.notes = query.value(6).toString();
+        devices.append(device);
+    }
+
+    return devices;
+}
+
+bool DatabaseManager::ensureDeviceInfos(const QList<DeviceInfo> &devices,
+                                        QString *errorMessage)
+{
+    if (devices.isEmpty()) {
+        return true;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO devices "
+        "(device_id, name, model, location, ip_address, protocol, notes, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
+
+    const auto textValue = [](const QString &value) {
+        return value.isNull() ? QStringLiteral("") : value;
+    };
+
+    for (const DeviceInfo &device : devices) {
+        query.bindValue(0, textValue(device.deviceId));
+        query.bindValue(1, textValue(device.name));
+        query.bindValue(2, textValue(device.model));
+        query.bindValue(3, textValue(device.location));
+        query.bindValue(4, textValue(device.ipAddress));
+        query.bindValue(5, textValue(device.protocol));
+        query.bindValue(6, textValue(device.notes));
+        query.bindValue(7, TimeUtils::toUtcIso8601());
+        if (!query.exec()) {
+            m_lastError = QStringLiteral("初始化设备 %1 失败：%2")
+                              .arg(device.deviceId, query.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool DatabaseManager::updateDeviceInfo(const DeviceInfo &device, QString *errorMessage)
+{
+    if (device.deviceId.trimmed().isEmpty()) {
+        m_lastError = QStringLiteral("设备编号不能为空");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO devices "
+        "(device_id, name, model, location, ip_address, protocol, notes, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
+    const auto textValue = [](const QString &value) {
+        return value.isNull() ? QStringLiteral("") : value.trimmed();
+    };
+
+    query.addBindValue(textValue(device.deviceId));
+    query.addBindValue(textValue(device.name));
+    query.addBindValue(textValue(device.model));
+    query.addBindValue(textValue(device.location));
+    query.addBindValue(textValue(device.ipAddress));
+    query.addBindValue(textValue(device.protocol));
+    query.addBindValue(textValue(device.notes));
+    query.addBindValue(TimeUtils::toUtcIso8601());
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("保存设备信息失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::insertAlarmRecord(const QString &deviceId,
+                                        const QString &level,
+                                        const QString &message,
+                                        QString *errorMessage)
+{
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO alarms (device_id, level, message, occurred_at) VALUES (?, ?, ?, ?)"));
+    query.addBindValue(deviceId);
+    query.addBindValue(level);
+    query.addBindValue(message);
+    query.addBindValue(TimeUtils::toUtcIso8601());
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("写入报警历史失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+QList<AlarmRecord> DatabaseManager::alarmHistoryForDevice(const QString &deviceId,
+                                                         int limit,
+                                                         QString *errorMessage)
+{
+    QList<AlarmRecord> alarms;
+    if (limit <= 0) {
+        return alarms;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT device_id, level, message, occurred_at "
+        "FROM alarms WHERE device_id = ? ORDER BY occurred_at DESC LIMIT ?"));
+    query.addBindValue(deviceId);
+    query.addBindValue(limit);
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("查询设备报警历史失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return alarms;
+    }
+
+    while (query.next()) {
+        AlarmRecord alarm;
+        alarm.deviceId = query.value(0).toString();
+        alarm.level = query.value(1).toString();
+        alarm.message = query.value(2).toString();
+        alarm.occurredAt = TimeUtils::fromIso8601(query.value(3).toString());
+        alarms.append(alarm);
+    }
+
+    return alarms;
+}
+bool DatabaseManager::insertHeartbeatRecords(const QList<HeartbeatRecord> &records,
+                                            QString *errorMessage)
+{
+    if (records.isEmpty()) {
+        return true;
+    }
+
+    if (!m_database.transaction()) {
+        m_lastError = QStringLiteral("无法开始心跳事务：%1").arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO device_status "
+        "(device_id, online, collecting, heartbeat_at, latency_ms) "
+        "VALUES (:device_id, :online, :collecting, :heartbeat_at, :latency_ms)"));
+
+    for (const HeartbeatRecord &record : records) {
+        const QDateTime heartbeatAt = record.heartbeatAt.isValid()
+            ? record.heartbeatAt.toUTC()
+            : QDateTime::currentDateTimeUtc();
+
+        query.bindValue(QStringLiteral(":device_id"), record.deviceId);
+        query.bindValue(QStringLiteral(":online"), record.online ? 1 : 0);
+        query.bindValue(QStringLiteral(":collecting"), record.collecting ? 1 : 0);
+        query.bindValue(QStringLiteral(":heartbeat_at"), TimeUtils::toUtcIso8601(heartbeatAt));
+        query.bindValue(QStringLiteral(":latency_ms"), record.latencyMs);
+
+        if (!query.exec()) {
+            m_database.rollback();
+            m_lastError = QStringLiteral("写入心跳失败：%1").arg(query.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    if (!m_database.commit()) {
+        m_database.rollback();
+        m_lastError = QStringLiteral("提交心跳失败：%1").arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
+}
+
+bool DatabaseManager::insertLog(const QString &level, const QString &source,
+                                const QString &message, QString *errorMessage)
+{
+    if (!m_initialized && !initialize()) {
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO system_logs (level, source, message, created_at) "
+        "VALUES (?, ?, ?, ?)"));
+    query.addBindValue(level);
+    query.addBindValue(source);
+    query.addBindValue(message);
+    query.addBindValue(TimeUtils::toUtcIso8601());
+
+    if (!query.exec()) {
+        m_lastError = QStringLiteral("写入日志失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
 }
 
 QString DatabaseManager::roleForUser(const QString &username)
