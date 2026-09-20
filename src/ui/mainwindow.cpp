@@ -213,14 +213,6 @@ void MainWindow::setupToolBar()
     });
     toolBar->addAction(aboutAction);
 
-    toolBar->addSeparator();
-    QAction *exitAction = new QAction(
-        style()->standardIcon(QStyle::SP_DialogCloseButton), QStringLiteral("退出"), this);
-    connect(exitAction, &QAction::triggered, this, [this]() {
-        m_forceQuit = true;
-        close();
-    });
-    toolBar->addAction(exitAction);
 }
 
 void MainWindow::setupTrayIcon()
