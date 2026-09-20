@@ -2,7 +2,7 @@
 
 工业设备监控与告警桌面应用，基于 Qt 6 和 C++ 开发。
 
-当前阶段：**阶段 0 项目基线完成，阶段 1 界面 MVP 进行中**。
+当前阶段：**阶段 0 和阶段 1 已完成，准备进入 MainWindow 拆分；独立 TCP 设备模拟器已具备基础功能**。
 
 ## 项目目标
 
@@ -30,9 +30,22 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 - 运行日志面板
 - 独立系统设置对话框
 - 独立关于对话框
+- SQLite 历史数据查询
+- 顶部告警中心 Tab，点击告警可定位对应设备
+- 独立 DeviceSimulator（TCP Server、4 台模拟设备、故障场景）
 - QSS 深色工业主题
 - CMake 构建和 MinGW 部署
 
+## Excel 数据导出
+
+系统设置中的“数据导出”页面提供：
+
+- 导出全部设备信息
+- 选择开始时间和结束时间
+- 按时间范围导出 SQLite 遥测历史
+- 生成真正的 `.xlsx` 文件
+
+导出使用 MIT 许可的 QXlsx 库。
 ## 关闭与系统托盘
 
 点击主窗口关闭按钮时，程序不会退出，而是隐藏到 Windows 系统托盘。
@@ -40,7 +53,6 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 托盘菜单提供：
 
 - 显示主界面
-- 连接/断开设备
 - 开始/暂停采集
 - 退出 Mu-Monitor
 
@@ -49,6 +61,10 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 只有托盘菜单中的“退出 Mu-Monitor”会真正退出程序。
 
 如果系统托盘不可用，关闭按钮会按普通方式退出程序。
+## 数据存储
+
+账户、登录会话、遥测历史、设备心跳和系统日志都会写入 SQLite 数据库。
+
 ## 默认账号与数据库
 
 首次启动会自动创建 SQLite 数据库，并创建默认管理员账号：
@@ -140,7 +156,7 @@ scripts\build_and_deploy.bat
 
 脚本会执行：
 
-1. 检查 Mu-Monitor 是否正在运行
+1. 检查并停止工作区内的 Mu-Monitor 进程
 2. 清除 `build\script-release`
 3. 从零执行 CMake Release 配置
 4. 编译 Mu-Monitor
@@ -174,6 +190,31 @@ cmake --build build
 cmake --build D:/qtProject/Mu-Monitor/build/Desktop_Qt_6_11_2_MinGW_64_bit_Release --target Mu-Monitor
 ```
 
+## 独立设备模拟器
+
+模拟器默认监听 `127.0.0.1:45454`。启动后点击“启动服务”，程序会每秒发送 4 台设备的换行分隔 JSON 遥测数据，并可对选中设备触发高温、高压、离线和恢复场景。
+
+```powershell
+cmake --build build --target DeviceSimulator
+.\build\DeviceSimulator.exe
+```
+
+## 自动化测试
+
+推荐使用统一检查脚本，从独立构建目录执行配置、构建和测试：
+
+```powershell
+.\scripts\check.ps1 -Clean
+.\scripts\check.ps1 -Configuration Release -Clean
+```
+
+也可以只运行已有构建目录中的 QtTest：
+
+```powershell
+ctest --test-dir build --output-on-failure
+```
+
+当前覆盖领域模型与状态转换、时间工具、遥测表格模型、主窗口缩放响应、SQLite、Excel 导出和模拟器 TCP 收发。
 ## Debug 与 Release
 
 - `Debug`：用于断点调试，速度较慢。
@@ -235,9 +276,13 @@ git commit -m "feat: describe the change"
 
 ## 开发计划
 
-详细任务和验收标准见：
+长期工业化路线见：
 
 [docs/TODOLIST.md](docs/TODOLIST.md)
+
+2026-10-15 项目交付计划见：
+
+[docs/DELIVERY_PLAN.md](docs/DELIVERY_PLAN.md)
 
 ## 许可证
 
