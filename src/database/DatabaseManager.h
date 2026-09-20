@@ -11,6 +11,7 @@ public:
     bool initialize(QString *errorMessage = nullptr);
     void shutdown();
     bool validateUser(const QString &username, const QString &password);
+    QString roleForUser(const QString &username);
     QString databasePath() const;
     QString lastError() const;
 
@@ -22,6 +23,8 @@ private:
     ~DatabaseManager();
 
     bool createTables(QString *errorMessage);
+    bool ensureColumn(const QString &table, const QString &column,
+                      const QString &definition, QString *errorMessage);
     bool ensureDefaultUser(QString *errorMessage);
     QByteArray passwordHash(const QString &password, const QByteArray &salt) const;
     QString generateSaltHex() const;

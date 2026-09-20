@@ -29,7 +29,7 @@
         </layout>
        </item>
        <item><spacer name="headerSpacer"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
-       <item><widget class="QLabel" name="connectionStatusLabel"><property name="text"><string>● 未连接</string></property></widget></item>
+       <item><widget class="QLabel" name="currentUserLabel"><property name="text"><string>账号：--</string></property></widget></item><item><widget class="QLabel" name="connectionStatusLabel"><property name="text"><string>● 未连接</string></property></widget></item>
        <item><widget class="QPushButton" name="connectButton"><property name="text"><string>连接设备</string></property></widget></item>
        <item><widget class="QPushButton" name="startButton"><property name="text"><string>开始采集</string></property></widget></item>
        <item><widget class="QPushButton" name="clearAlarmButton"><property name="text"><string>清空告警</string></property></widget></item>

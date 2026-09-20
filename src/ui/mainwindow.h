@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QMainWindow>
 #include <QStringList>
 
@@ -19,7 +20,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(const QString &currentUser, QWidget *parent = nullptr);
     ~MainWindow() override;
 
 protected:
@@ -53,6 +54,8 @@ private:
     bool m_trayMessageShown = false;
     QStringList m_deviceIds;
     QStringList m_deviceNames;
+    QString m_currentUser;
+    QDateTime m_loginTime;
     bool m_connected = false;
     int m_tick = 0;
     int m_dataPoints = 0;

@@ -100,11 +100,44 @@ bool DatabaseManager::createTables(QString *errorMessage)
         "username TEXT NOT NULL UNIQUE,"
         "password_hash TEXT NOT NULL,"
         "salt TEXT NOT NULL,"
+        "role TEXT NOT NULL DEFAULT 'user',"
         "created_at TEXT NOT NULL"
         ")");
 
     if (!query.exec(sql)) {
         m_lastError = QStringLiteral("创建 users 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return ensureColumn(
+        QStringLiteral("users"),
+        QStringLiteral("role"),
+        QStringLiteral("TEXT NOT NULL DEFAULT 'user'"),
+        errorMessage);
+}
+
+bool DatabaseManager::ensureColumn(const QString &table, const QString &column,
+                                   const QString &definition, QString *errorMessage)
+{
+    QSqlQuery info(m_database);
+    if (!info.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table))) {
+        m_lastError = QStringLiteral("读取表结构失败：%1").arg(info.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    while (info.next()) {
+        if (info.value(1).toString() == column) {
+            return true;
+        }
+    }
+
+    QSqlQuery alter(m_database);
+    const QString sql = QStringLiteral("ALTER TABLE %1 ADD COLUMN %2 %3")
+                            .arg(table, column, definition);
+    if (!alter.exec(sql)) {
+        m_lastError = QStringLiteral("新增字段 %1 失败：%2").arg(column, alter.lastError().text());
         if (errorMessage) *errorMessage = m_lastError;
         return false;
     }
@@ -123,6 +156,14 @@ bool DatabaseManager::ensureDefaultUser(QString *errorMessage)
     }
 
     if (query.value(0).toInt() > 0) {
+        QSqlQuery update(m_database);
+        update.prepare(QStringLiteral(
+            "UPDATE users SET role = 'admin' WHERE username = 'admin' AND role != 'admin'"));
+        if (!update.exec()) {
+            m_lastError = QStringLiteral("更新默认管理员角色失败：%1").arg(update.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
         return true;
     }
 
@@ -132,10 +173,12 @@ bool DatabaseManager::ensureDefaultUser(QString *errorMessage)
 
     QSqlQuery insert(m_database);
     insert.prepare(QStringLiteral(
-        "INSERT INTO users (username, password_hash, salt, created_at) VALUES (?, ?, ?, ?)"));
+        "INSERT INTO users (username, password_hash, salt, role, created_at) "
+        "VALUES (?, ?, ?, ?, ?)"));
     insert.addBindValue(QStringLiteral("admin"));
     insert.addBindValue(hashHex);
     insert.addBindValue(saltHex);
+    insert.addBindValue(QStringLiteral("admin"));
     insert.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
 
     if (!insert.exec()) {
@@ -173,6 +216,23 @@ bool DatabaseManager::validateUser(const QString &username, const QString &passw
         diff |= storedHash.at(i).unicode() ^ computedHash.at(i).unicode();
     }
     return diff == 0;
+}
+
+QString DatabaseManager::roleForUser(const QString &username)
+{
+    if (!m_initialized && !initialize()) {
+        return QStringLiteral("user");
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("SELECT role FROM users WHERE username = ?"));
+    query.addBindValue(username.trimmed());
+    if (!query.exec() || !query.next()) {
+        return QStringLiteral("user");
+    }
+
+    const QString role = query.value(0).toString().trimmed();
+    return role.isEmpty() ? QStringLiteral("user") : role;
 }
 
 QString DatabaseManager::databasePath() const

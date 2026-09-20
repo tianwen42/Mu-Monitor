@@ -53,9 +53,10 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    const QString currentUser = loginDialog.username();
     int exitCode = 0;
     {
-        MainWindow w;
+        MainWindow w(currentUser);
         w.show();
         exitCode = QApplication::exec();
     }

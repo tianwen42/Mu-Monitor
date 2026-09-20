@@ -3,6 +3,7 @@
 
 #include "ui/TelemetryTableModel.h"
 #include "ui/TrendChartWidget.h"
+#include "database/DatabaseManager.h"
 #include "ui/SettingsDialog.h"
 #include "ui/AboutDialog.h"
 
@@ -39,9 +40,11 @@
 #include <QVBoxLayout>
 #include <QtGlobal>
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(const QString &currentUser, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , m_currentUser(currentUser)
+    , m_loginTime(QDateTime::currentDateTime())
 {
     ui->setupUi(this);
     setupUi();
@@ -86,6 +89,17 @@ void MainWindow::setupUi()
 {
     // Keep the standard menu actions in code, but use only the toolbar as the visible top bar.
     menuBar()->hide();
+
+    const QString role = DatabaseManager::instance().roleForUser(m_currentUser);
+    const QString roleText = role == QStringLiteral("admin")
+        ? QStringLiteral("管理员")
+        : QStringLiteral("普通用户");
+    ui->currentUserLabel->setText(
+        QStringLiteral("账号：%1（%2）").arg(m_currentUser, roleText));
+    ui->currentUserLabel->setToolTip(
+        QStringLiteral("登录时间：%1\n数据库：%2")
+            .arg(m_loginTime.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+                 DatabaseManager::instance().databasePath()));
 
     m_model = new TelemetryTableModel(this);
     ui->telemetryTable->setModel(m_model);

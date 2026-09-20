@@ -336,3 +336,9 @@ QTextBrowser#aboutLicense {
     border-radius: 6px;
     padding: 10px;
 }
+
+QLabel#currentUserLabel {
+    color: #cbd5e1;
+    padding: 0 10px;
+    font-weight: 600;
+}
