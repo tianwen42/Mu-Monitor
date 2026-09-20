@@ -24,8 +24,6 @@ private slots:
     void onConnectClicked();
     void onStartClicked();
     void onClearAlarmsClicked();
-    void onAckAlarmClicked();
-    void onDeviceSearchChanged(const QString &text);
     void updateDemoData();
 
 private:

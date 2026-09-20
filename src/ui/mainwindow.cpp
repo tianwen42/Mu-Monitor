@@ -320,29 +320,17 @@ void MainWindow::setupConnections()
     connect(ui->connectButton, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
     connect(ui->startButton, &QPushButton::clicked, this, &MainWindow::onStartClicked);
     connect(ui->clearAlarmButton, &QPushButton::clicked, this, &MainWindow::onClearAlarmsClicked);
-    connect(ui->ackAlarmButton, &QPushButton::clicked, this, &MainWindow::onAckAlarmClicked);
-    connect(ui->deviceSearch, &QLineEdit::textChanged, this, &MainWindow::onDeviceSearchChanged);
     connect(m_timer, &QTimer::timeout, this, &MainWindow::updateDemoData);
 }
 
 void MainWindow::setupDemoDevices()
 {
-    struct DeviceSeed
-    {
-        const char *id;
-        const char *name;
-    };
+    m_deviceIds.clear();
+    m_deviceNames.clear();
 
-    const DeviceSeed seeds[] = {
-        {"DEV-001", "注塑机 A线"},
-        {"DEV-002", "空压机 1号"},
-        {"DEV-003", "焊接机器人"},
-        {"DEV-004", "包装线"},
-    };
-
-    for (const DeviceSeed &seed : seeds) {
-        const QString id = QString::fromUtf8(seed.id);
-        const QString name = QString::fromUtf8(seed.name);
+    for (int i = 1; i <= 100; ++i) {
+        const QString id = QStringLiteral("DEV-%1").arg(i, 3, 10, QLatin1Char('0'));
+        const QString name = QStringLiteral("模拟设备 %1").arg(i, 3, 10, QLatin1Char('0'));
         m_deviceIds << id;
         m_deviceNames << name;
 
@@ -412,40 +400,11 @@ void MainWindow::onClearAlarmsClicked()
     updateKpi();
 }
 
-void MainWindow::onAckAlarmClicked()
-{
-    const int row = ui->alarmList->currentRow();
-    if (row < 0) {
-        return;
-    }
-
-    QListWidgetItem *item = ui->alarmList->takeItem(row);
-    if (item) {
-        const QString text = item->text();
-        delete item;
-
-        for (int i = 0; i < ui->overviewAlarmList->count(); ++i) {
-            if (ui->overviewAlarmList->item(i)->text() == text) {
-                delete ui->overviewAlarmList->takeItem(i);
-                break;
-            }
-        }
-    }
-    updateKpi();
-}
-
-void MainWindow::onDeviceSearchChanged(const QString &text)
-{
-    for (int i = 0; i < ui->deviceList->count(); ++i) {
-        QListWidgetItem *item = ui->deviceList->item(i);
-        item->setHidden(!item->text().contains(text, Qt::CaseInsensitive));
-    }
-}
-
 void MainWindow::updateDemoData()
 {
     ++m_tick;
     m_averageTemperature = 0.0;
+    double averagePressure = 0.0;
 
     for (int i = 0; i < m_deviceIds.size(); ++i) {
         const double jitterTemp = (QRandomGenerator::global()->generateDouble() - 0.5) * 7.0;
@@ -483,8 +442,8 @@ void MainWindow::updateDemoData()
         record.updatedAt = QDateTime::currentDateTime();
 
         m_model->upsertRecord(record);
-        m_trendChart->addSample(temperature, pressure);
         m_averageTemperature += temperature;
+        averagePressure += pressure;
         ++m_dataPoints;
 
         if (!alarmMessage.isEmpty()) {
@@ -494,6 +453,8 @@ void MainWindow::updateDemoData()
 
     if (!m_deviceIds.isEmpty()) {
         m_averageTemperature /= m_deviceIds.size();
+        averagePressure /= m_deviceIds.size();
+        m_trendChart->addSample(m_averageTemperature, averagePressure);
     } else {
         m_averageTemperature = 0.0;
     }
