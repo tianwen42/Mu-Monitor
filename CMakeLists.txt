@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(Mu-Monitor VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets LinguistTools)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql LinguistTools)
 
 qt_standard_project_setup()
 
@@ -9,6 +9,10 @@ qt_add_executable(Mu-Monitor
     WIN32 MACOSX_BUNDLE
     src/main.cpp
     src/core/TelemetryRecord.h
+    src/database/DatabaseManager.cpp
+    src/database/DatabaseManager.h
+    src/ui/LoginDialog.cpp
+    src/ui/LoginDialog.h
     src/ui/mainwindow.cpp
     src/ui/mainwindow.h
     src/ui/mainwindow.ui
@@ -40,6 +44,7 @@ target_link_libraries(Mu-Monitor
     PRIVATE
         Qt::Core
         Qt::Widgets
+        Qt::Sql
 )
 
 install(TARGETS Mu-Monitor

@@ -1,8 +1,11 @@
+#include "database/DatabaseManager.h"
+#include "ui/LoginDialog.h"
 #include "ui/mainwindow.h"
 
 #include <QApplication>
 #include <QFile>
 #include <QLocale>
+#include <QMessageBox>
 #include <QTranslator>
 
 int main(int argc, char *argv[])
@@ -32,7 +35,30 @@ int main(int argc, char *argv[])
         }
     }
 
-    MainWindow w;
-    w.show();
-    return QApplication::exec();
+    QString databaseError;
+    if (!DatabaseManager::instance().initialize(&databaseError)) {
+        QMessageBox::critical(
+            nullptr,
+            QStringLiteral("数据库初始化失败"),
+            databaseError + QStringLiteral("\n\n数据库路径：")
+                + DatabaseManager::instance().databasePath());
+        DatabaseManager::instance().shutdown();
+        return 1;
+    }
+
+    LoginDialog loginDialog;
+    if (loginDialog.exec() != QDialog::Accepted) {
+        DatabaseManager::instance().shutdown();
+        return 0;
+    }
+
+    int exitCode = 0;
+    {
+        MainWindow w;
+        w.show();
+        exitCode = QApplication::exec();
+    }
+
+    DatabaseManager::instance().shutdown();
+    return exitCode;
 }
