@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$CleanData
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -15,6 +17,8 @@ $CMake = Join-Path $CMakeDir "cmake.exe"
 $NinjaDir = "D:\Qt\Tools\Ninja"
 $BuildDir = Join-Path $ProjectRoot ("build\script-release-" + $PID)
 $DistDir = Join-Path $ProjectRoot "dist"
+$DataDir = Join-Path $DistDir "data"
+$PortableFlag = Join-Path $DistDir "portable.flag"
 $TargetName = "Mu-Monitor"
 $ExecutableName = "$TargetName.exe"
 
@@ -76,6 +80,7 @@ function Remove-DistItem {
 Write-Host "Project root : $ProjectRoot"
 Write-Host "Build dir    : $BuildDir"
 Write-Host "Dist dir     : $DistDir"
+Write-Host "Clean data   : $CleanData"
 
 function Stop-ProjectProcess {
     $running = Get-Process -Name $TargetName -ErrorAction SilentlyContinue
@@ -119,11 +124,16 @@ if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
 
 Stop-ProjectProcess
 
-if (Test-Path -LiteralPath $DistDir) {
-    Write-Host "Cleaning previous dist..."
-    Remove-DirectoryWithRetry -Path $DistDir
-}
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+if ($CleanData) {
+    Write-Host "Explicitly cleaning preserved data directory: $DataDir"
+    Remove-DistItem -RelativePath "data"
+}
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+if (-not (Test-Path -LiteralPath $PortableFlag -PathType Leaf)) {
+    New-Item -ItemType File -Path $PortableFlag | Out-Null
+}
 
 $distExecutable = Join-Path $DistDir $ExecutableName
 Copy-Item -LiteralPath $builtExecutable -Destination $distExecutable -Force
@@ -188,4 +198,5 @@ $distSize = (Get-ChildItem -LiteralPath $DistDir -Recurse -File | Measure-Object
 Write-Host ""
 Write-Host "Build and deployment completed successfully."
 Write-Host "Executable : $distExecutable"
+Write-Host "Data dir   : $DataDir"
 Write-Host ("Dist size  : {0:N2} MB" -f ($distSize / 1MB))

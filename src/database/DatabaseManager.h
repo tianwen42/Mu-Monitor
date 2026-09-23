@@ -66,6 +66,19 @@ private:
     DatabaseManager();
     ~DatabaseManager();
 
+    bool checkDatabaseWritable(bool databaseExists, QString *errorMessage);
+    bool quickCheck(QSqlDatabase &database, const QString &context,
+                    QString *errorMessage);
+    bool configureDatabase(QString *errorMessage);
+    bool readSchemaVersion(bool *hasVersionTable, int *version,
+                           QString *errorMessage);
+    bool migrateSchema(bool databaseExisted, QString *errorMessage);
+    bool backupDatabase(int fromVersion, QString *errorMessage);
+    bool validateSqliteDatabase(const QString &databasePath, const QString &context,
+                                QString *errorMessage);
+    bool importLegacyDatabase(const QString &sourcePath,
+                              const QString &destinationPath,
+                              QString *errorMessage);
     bool createTables(QString *errorMessage);
     bool normalizeTimestampStorage(QString *errorMessage);
     bool normalizeTelemetryStatusStorage(QString *errorMessage);
@@ -79,6 +92,7 @@ private:
 
     QString m_connectionName;
     QString m_databasePath;
+    QString m_backupsDirectory;
     QString m_lastError;
     QSqlDatabase m_database;
     bool m_initialized = false;

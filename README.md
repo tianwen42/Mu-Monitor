@@ -61,24 +61,52 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 只有托盘菜单中的“退出 Mu-Monitor”会真正退出程序。
 
 如果系统托盘不可用，关闭按钮会按普通方式退出程序。
-## 数据存储
+## 数据存储与目录
 
 账户、登录会话、遥测历史、设备心跳和系统日志都会写入 SQLite 数据库。
 
-## 默认账号与数据库
+数据目录按固定优先级解析：
 
-首次启动会自动创建 SQLite 数据库，并创建默认管理员账号：
+1. 命令行 `--data-dir <绝对路径>` 或 `--data-dir=<绝对路径>`
+2. 环境变量 `MU_MONITOR_DATA_DIR`
+3. 可执行文件旁的 `portable.flag`，使用 `<exe目录>\data`
+4. `QStandardPaths::AppLocalDataLocation`
+
+程序不会使用当前工作目录作为数据目录。标准布局如下：
+
+```text
+<data-dir>/
+  database/
+    mu-monitor.db
+    backups/
+  logs/
+  exports/
+  runtime/
+  config/
+```
+
+Windows 默认数据库位置：
+
+```text
+%LOCALAPPDATA%\Mu-Monitor\Mu-Monitor\database\mu-monitor.db
+```
+
+便携部署数据库位置：
+
+```text
+<安装目录>\data\database\mu-monitor.db
+```
+
+首次启动会自动创建目录和 SQLite 数据库，并创建默认管理员账号：
 
 ```text
 用户名：admin
 密码：123456
 ```
 
-数据库位置：
+已有数据库会直接复用。初始化前会检查写权限和 SQLite `quick_check`，启用 WAL、`busy_timeout` 和外键约束。结构升级使用 `schema_version` 事务迁移，并在迁移前把备份写入 `database/backups`。
 
-```text
-%APPDATA%\Mu-Monitor\mu-monitor.db
-```
+旧版 `%APPDATA%\Mu-Monitor\Mu-Monitor\mu-monitor.db` 会在新位置没有数据库时先校验并复制迁移，旧文件保留。新旧数据库同时存在时会报冲突，不会静默选择或自动合并。
 
 密码不会以明文保存，数据库中使用带随机盐、10 万轮迭代的 SHA-256 哈希。
 
@@ -89,8 +117,9 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 - 有效期内启动程序会跳过登录窗口
 - 每次成功自动登录后会重新续期 30 天
 
-
 > 默认密码仅用于开发阶段，后续必须增加修改密码功能。
+
+更多设计见 [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md)。
 
 ## 开发环境
 
@@ -157,13 +186,20 @@ scripts\build_and_deploy.bat
 脚本会执行：
 
 1. 检查并停止工作区内的 Mu-Monitor 进程
-2. 清除 `build\script-release`
-3. 从零执行 CMake Release 配置
-4. 编译 Mu-Monitor
-5. 清除旧的 `dist`
-6. 复制新的 exe
-7. 执行 `windeployqt`
-8. 输出最终 exe 和 dist 大小
+2. 清理脚本专用构建目录并重新配置 Release
+3. 编译 Mu-Monitor
+4. 只更新 `dist` 中的 exe 和 Qt 运行时
+5. 保留 `dist/data` 中的数据库、日志和备份
+6. 写入或保留 `dist/portable.flag`
+7. 输出最终 exe、数据目录和 dist 大小
+
+默认部署不会清理数据。只有明确需要重置便携数据时才执行：
+
+```powershell
+.\scripts\build_and_deploy.ps1 -CleanData
+```
+
+`-CleanData` 是唯一会删除 `dist/data` 的部署参数。
 ## 命令行构建
 
 先配置 MinGW 和 Qt 环境：
@@ -214,7 +250,7 @@ cmake --build build --target DeviceSimulator
 ctest --test-dir build --output-on-failure
 ```
 
-当前覆盖领域模型与状态转换、时间工具、遥测表格模型、主窗口缩放响应、SQLite、Excel 导出和模拟器 TCP 收发。
+当前覆盖领域模型与状态转换、时间工具、遥测表格模型、主窗口缩放响应、数据目录解析、SQLite 初始化与迁移、Excel 导出和模拟器 TCP 收发。
 ## Debug 与 Release
 
 - `Debug`：用于断点调试，速度较慢。

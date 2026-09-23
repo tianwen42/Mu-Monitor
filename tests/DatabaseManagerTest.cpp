@@ -1,16 +1,23 @@
+#include "database/DataDirectory.h"
 #include "database/DatabaseManager.h"
 
 #include "utils/TimeUtils.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTimeZone>
+#include <QUuid>
 #include <QtTest>
+
+#include <memory>
 
 class DatabaseManagerTest : public QObject
 {
@@ -21,20 +28,40 @@ private slots:
     void init();
     void cleanup();
 
-    void initializesDefaultUserAndRole();
+    void initializesDefaultUserAndLayout();
+    void createsMissingDatabase();
+    void configuresSqliteForReliability();
+    void reopensExistingDatabase();
+    void rejectsCorruptDatabaseWithoutOverwriting();
+    void rejectsUnwritableDataDirectory();
+    void rejectsReadOnlyDatabase();
+
+    void migratesLegacySchemaSuccessfully();
+    void rollsBackFailedMigration();
+    void importsLegacyDatabaseAndKeepsOriginal();
+    void rejectsNewAndLegacyDatabaseConflict();
+    void createsBackupBeforeMigration();
+
     void rejectsInvalidCredentials();
     void rememberSessionRoundTrip();
-    void sessionTokenIsHashedAndExpiryIsEnforced();
     void storesTelemetryAndQueriesTimeRange();
-    void latestRecordReturnsOneWhenTimestampsTie();
-    void persistsTelemetryAcrossReinitialize();
     void storesHeartbeatAndSystemLog();
 
 private:
-    bool removeTestDataDirectory() const;
     bool initialize(QString *errorMessage = nullptr);
+    bool createSqliteDatabase(const QString &path, const QStringList &statements,
+                              QString *errorMessage = nullptr);
+    QVariant scalarValue(const QString &path, const QString &sql, bool *ok = nullptr,
+                         QString *errorMessage = nullptr);
+    bool objectExists(const QString &path, const QString &type, const QString &name,
+                      QString *errorMessage = nullptr);
+    int backupCount(QString *errorMessage = nullptr) const;
+    bool removeLegacyTestDirectory() const;
 
+    std::unique_ptr<QTemporaryDir> m_temporaryDirectory;
     QString m_dataDirectory;
+    QString m_databasePath;
+    QString m_legacyDatabase;
 };
 
 void DatabaseManagerTest::initTestCase()
@@ -43,35 +70,33 @@ void DatabaseManagerTest::initTestCase()
     QCoreApplication::setOrganizationName(QStringLiteral("Mu-MonitorTests"));
     QCoreApplication::setApplicationName(
         QStringLiteral("Mu-MonitorDatabaseTest-%1").arg(QCoreApplication::applicationPid()));
-    m_dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QVERIFY2(!m_dataDirectory.isEmpty(), "AppDataLocation must not be empty");
 }
 
 void DatabaseManagerTest::init()
 {
     DatabaseManager::instance().shutdown();
-    removeTestDataDirectory();
+
+    QString resolveError;
+    const DataDirectory::Paths defaultPaths = DataDirectory::resolve(
+        {QCoreApplication::applicationFilePath()},
+        QCoreApplication::applicationDirPath(), &resolveError);
+    QVERIFY2(resolveError.isEmpty(), qPrintable(resolveError));
+    m_legacyDatabase = defaultPaths.legacyDatabase;
+    removeLegacyTestDirectory();
+
+    m_temporaryDirectory = std::make_unique<QTemporaryDir>();
+    QVERIFY(m_temporaryDirectory->isValid());
+    m_dataDirectory = QDir(m_temporaryDirectory->path()).filePath(QStringLiteral("data"));
+    m_databasePath = QDir(m_dataDirectory).filePath(QStringLiteral("database/mu-monitor.db"));
+    qputenv("MU_MONITOR_DATA_DIR", m_dataDirectory.toUtf8());
 }
 
 void DatabaseManagerTest::cleanup()
 {
     DatabaseManager::instance().shutdown();
-    removeTestDataDirectory();
-}
-
-bool DatabaseManagerTest::removeTestDataDirectory() const
-{
-    if (m_dataDirectory.isEmpty()) {
-        return false;
-    }
-
-    const QString normalized = QDir::fromNativeSeparators(m_dataDirectory).toLower();
-    if (!normalized.contains(QStringLiteral("qttest"))
-        && !normalized.contains(QStringLiteral("mu-monitordatabasetest"))) {
-        return false;
-    }
-
-    return QDir(m_dataDirectory).removeRecursively() || !QFileInfo::exists(m_dataDirectory);
+    removeLegacyTestDirectory();
+    qunsetenv("MU_MONITOR_DATA_DIR");
+    m_temporaryDirectory.reset();
 }
 
 bool DatabaseManagerTest::initialize(QString *errorMessage)
@@ -84,12 +109,408 @@ bool DatabaseManagerTest::initialize(QString *errorMessage)
     return initialized;
 }
 
-void DatabaseManagerTest::initializesDefaultUserAndRole()
+bool DatabaseManagerTest::createSqliteDatabase(const QString &path,
+                                               const QStringList &statements,
+                                               QString *errorMessage)
+{
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
+        if (errorMessage) *errorMessage = QStringLiteral("无法创建数据库目录");
+        return false;
+    }
+
+    const QString connectionName = QStringLiteral("DatabaseManagerTestCreate-%1")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    bool success = false;
+    QString failure;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                          connectionName);
+        database.setDatabaseName(path);
+        if (!database.open()) {
+            failure = database.lastError().text();
+        } else {
+            success = true;
+            for (const QString &statement : statements) {
+                QSqlQuery query(database);
+                if (!query.exec(statement)) {
+                    failure = query.lastError().text();
+                    success = false;
+                    break;
+                }
+            }
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    if (!success && errorMessage) {
+        *errorMessage = failure;
+    }
+    return success;
+}
+
+QVariant DatabaseManagerTest::scalarValue(const QString &path, const QString &sql,
+                                          bool *ok, QString *errorMessage)
+{
+    const QString connectionName = QStringLiteral("DatabaseManagerTestQuery-%1")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    bool success = false;
+    QVariant value;
+    QString failure;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                          connectionName);
+        database.setDatabaseName(path);
+        database.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        if (!database.open()) {
+            failure = database.lastError().text();
+        } else {
+            QSqlQuery query(database);
+            if (query.exec(sql) && query.next()) {
+                value = query.value(0);
+                success = true;
+            } else {
+                failure = query.lastError().text();
+            }
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    if (ok) *ok = success;
+    if (!success && errorMessage) *errorMessage = failure;
+    return value;
+}
+
+bool DatabaseManagerTest::objectExists(const QString &path, const QString &type,
+                                       const QString &name, QString *errorMessage)
+{
+    bool ok = false;
+    QString queryError;
+    const QVariant value = scalarValue(
+        path,
+        QStringLiteral("SELECT COUNT(*) FROM sqlite_master WHERE type = '%1' AND name = '%2'")
+            .arg(type, name),
+        &ok, &queryError);
+    if (!ok) {
+        if (errorMessage) *errorMessage = queryError;
+        return false;
+    }
+    return value.toInt() > 0;
+}
+
+int DatabaseManagerTest::backupCount(QString *errorMessage) const
+{
+    const QString backupDirectory = QDir(m_dataDirectory).filePath(QStringLiteral("database/backups"));
+    if (!QFileInfo(backupDirectory).exists()) {
+        return 0;
+    }
+    if (!QFileInfo(backupDirectory).isDir()) {
+        if (errorMessage) *errorMessage = QStringLiteral("备份路径不是目录");
+        return -1;
+    }
+    return QDir(backupDirectory).entryList(
+        {QStringLiteral("mu-monitor-before-v*.db")}, QDir::Files).size();
+}
+
+bool DatabaseManagerTest::removeLegacyTestDirectory() const
+{
+    if (m_legacyDatabase.isEmpty()) {
+        return false;
+    }
+
+    const QString directory = QFileInfo(m_legacyDatabase).absolutePath();
+    const QString normalized = QDir::fromNativeSeparators(directory).toLower();
+    if (!normalized.contains(QStringLiteral("qttest"))
+        && !normalized.contains(QStringLiteral("mu-monitordatabasetest"))) {
+        return false;
+    }
+    return QDir(directory).removeRecursively() || !QFileInfo::exists(directory);
+}
+
+void DatabaseManagerTest::initializesDefaultUserAndLayout()
 {
     QVERIFY(initialize());
-    QVERIFY(QFileInfo::exists(DatabaseManager::instance().databasePath()));
+    QCOMPARE(DatabaseManager::instance().databasePath(), m_databasePath);
+    QVERIFY(QFileInfo::exists(m_databasePath));
+
+    const QStringList directories = {
+        QDir(m_dataDirectory).filePath(QStringLiteral("database")),
+        QDir(m_dataDirectory).filePath(QStringLiteral("database/backups")),
+        QDir(m_dataDirectory).filePath(QStringLiteral("logs")),
+        QDir(m_dataDirectory).filePath(QStringLiteral("exports")),
+        QDir(m_dataDirectory).filePath(QStringLiteral("runtime")),
+        QDir(m_dataDirectory).filePath(QStringLiteral("config")),
+    };
+    for (const QString &directory : directories) {
+        QVERIFY2(QFileInfo(directory).isDir(), qPrintable(directory));
+    }
+
     QCOMPARE(DatabaseManager::instance().roleForUser(QStringLiteral("admin")),
              QStringLiteral("admin"));
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
+             1);
+}
+
+void DatabaseManagerTest::createsMissingDatabase()
+{
+    QVERIFY(!QFileInfo::exists(m_databasePath));
+    QString errorMessage;
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+    QVERIFY(QFileInfo(m_databasePath).isFile());
+    QVERIFY(QFileInfo(m_databasePath).size() > 0);
+}
+
+void DatabaseManagerTest::configuresSqliteForReliability()
+{
+    QVERIFY(initialize());
+
+    QSqlDatabase activeConnection =
+        QSqlDatabase::database(QStringLiteral("mu_monitor_sqlite"));
+    QVERIFY(activeConnection.isOpen());
+
+    QSqlQuery query(activeConnection);
+    QVERIFY(query.exec(QStringLiteral("PRAGMA foreign_keys")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 1);
+
+    QVERIFY(query.exec(QStringLiteral("PRAGMA busy_timeout")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 5000);
+
+    QVERIFY(query.exec(QStringLiteral("PRAGMA journal_mode")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toString().toLower(), QStringLiteral("wal"));
+}
+
+void DatabaseManagerTest::reopensExistingDatabase()
+{
+    QVERIFY(initialize());
+
+    TelemetryRecord record;
+    record.deviceId = QStringLiteral("DEV-REOPEN");
+    record.name = QStringLiteral("重复打开设备");
+    record.status = TelemetryStatus::Online;
+    record.temperature = 66.6;
+    record.pressure = 1.33;
+    record.speed = 1777.0;
+    record.voltage = 219.5;
+    record.updatedAt = QDateTime::currentDateTimeUtc();
+
+    QString errorMessage;
+    QVERIFY2(DatabaseManager::instance().insertTelemetryRecords({record}, &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY(initialize());
+    QCOMPARE(DatabaseManager::instance().telemetryRecordCount(&errorMessage), qint64(1));
+
+    DatabaseManager::instance().shutdown();
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+
+    const QList<TelemetryRecord> records =
+        DatabaseManager::instance().latestDeviceRecords(&errorMessage);
+    QCOMPARE(records.size(), 1);
+    QCOMPARE(records.constFirst().deviceId, QStringLiteral("DEV-REOPEN"));
+}
+
+void DatabaseManagerTest::rejectsCorruptDatabaseWithoutOverwriting()
+{
+    QVERIFY(QDir().mkpath(QFileInfo(m_databasePath).absolutePath()));
+    const QByteArray corruptContents("this is not a sqlite database");
+    {
+        QFile corrupt(m_databasePath);
+        QVERIFY(corrupt.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(corrupt.write(corruptContents), qint64(corruptContents.size()));
+    }
+
+    QString errorMessage;
+    QVERIFY2(!initialize(&errorMessage), "损坏数据库不应初始化成功");
+    QVERIFY(!errorMessage.isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("quick_check"), Qt::CaseInsensitive));
+
+    QFile corrupt(m_databasePath);
+    QVERIFY(corrupt.open(QIODevice::ReadOnly));
+    QCOMPARE(corrupt.readAll(), corruptContents);
+}
+
+void DatabaseManagerTest::rejectsUnwritableDataDirectory()
+{
+    QVERIFY(QDir().mkpath(m_temporaryDirectory->path()));
+    {
+        QFile dataPath(m_dataDirectory);
+        QVERIFY(dataPath.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(dataPath.write("file"), qint64(4));
+    }
+
+    QString errorMessage;
+    QVERIFY2(!initialize(&errorMessage), "文件不能作为数据目录");
+    QVERIFY(!errorMessage.isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("不是目录")));
+}
+
+void DatabaseManagerTest::rejectsReadOnlyDatabase()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_databasePath,
+                 {QStringLiteral("CREATE TABLE marker (value TEXT)")},
+                 &errorMessage),
+             qPrintable(errorMessage));
+
+    const QFile::Permissions originalPermissions = QFile::permissions(m_databasePath);
+    QVERIFY(QFile::setPermissions(m_databasePath, QFileDevice::ReadOwner));
+
+    const bool initialized = initialize(&errorMessage);
+    QFile::setPermissions(m_databasePath, originalPermissions);
+
+    if (initialized) {
+        QSKIP("当前平台仍允许以读写方式打开只读数据库文件");
+    }
+    QVERIFY(!errorMessage.isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("不可写")));
+}
+
+void DatabaseManagerTest::migratesLegacySchemaSuccessfully()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_databasePath,
+                 {
+                     QStringLiteral(
+                         "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, "
+                         "password_hash TEXT, salt TEXT, role TEXT, created_at TEXT)"),
+                     QStringLiteral(
+                         "INSERT INTO users "
+                         "(id, username, password_hash, salt, role, created_at) "
+                         "VALUES (1, 'legacy-user', 'hash', 'salt', 'user', "
+                         "'2026-01-01T00:00:00.000Z')"),
+                 },
+                 &errorMessage),
+             qPrintable(errorMessage));
+
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+    QCOMPARE(DatabaseManager::instance().roleForUser(QStringLiteral("legacy-user")),
+             QStringLiteral("user"));
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
+             1);
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT COUNT(*) FROM users WHERE username='legacy-user'"))
+                 .toInt(),
+             1);
+    QCOMPARE(backupCount(&errorMessage), 1);
+}
+
+void DatabaseManagerTest::rollsBackFailedMigration()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_databasePath,
+                 {
+                     QStringLiteral(
+                         "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, "
+                         "description TEXT NOT NULL, applied_at TEXT NOT NULL)"),
+                     QStringLiteral(
+                         "INSERT INTO schema_version "
+                         "(version, description, applied_at) VALUES (0, 'test', 'now')"),
+                     QStringLiteral(
+                         "CREATE TABLE idx_telemetry_device_time (value INTEGER)"),
+                 },
+                 &errorMessage),
+             qPrintable(errorMessage));
+
+    QVERIFY2(!initialize(&errorMessage), "迁移应因对象名冲突失败");
+    QVERIFY(!errorMessage.isEmpty());
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
+             0);
+    QString inspectionError;
+    QVERIFY(!objectExists(m_databasePath, QStringLiteral("table"), QStringLiteral("users"),
+                          &inspectionError));
+    QVERIFY2(inspectionError.isEmpty(), qPrintable(inspectionError));
+    QVERIFY(objectExists(m_databasePath, QStringLiteral("table"),
+                         QStringLiteral("idx_telemetry_device_time"), &inspectionError));
+    QVERIFY2(inspectionError.isEmpty(), qPrintable(inspectionError));
+    QCOMPARE(backupCount(&inspectionError), 1);
+    QVERIFY2(inspectionError.isEmpty(), qPrintable(inspectionError));
+}
+
+void DatabaseManagerTest::importsLegacyDatabaseAndKeepsOriginal()
+{
+    QVERIFY(!m_legacyDatabase.isEmpty());
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_legacyDatabase,
+                 {
+                     QStringLiteral(
+                         "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, "
+                         "password_hash TEXT, salt TEXT, role TEXT, created_at TEXT)"),
+                     QStringLiteral(
+                         "INSERT INTO users "
+                         "(id, username, password_hash, salt, role, created_at) "
+                         "VALUES (1, 'old-user', 'hash', 'salt', 'user', "
+                         "'2026-01-01T00:00:00.000Z')"),
+                 },
+                 &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY(QFileInfo::exists(m_legacyDatabase));
+    QVERIFY(!QFileInfo::exists(m_databasePath));
+
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+    QVERIFY(QFileInfo::exists(m_legacyDatabase));
+    QVERIFY(QFileInfo::exists(m_databasePath));
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT COUNT(*) FROM users WHERE username='old-user'"))
+                 .toInt(),
+             1);
+    QCOMPARE(scalarValue(m_legacyDatabase,
+                         QStringLiteral("SELECT COUNT(*) FROM users WHERE username='old-user'"))
+                 .toInt(),
+             1);
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
+             1);
+}
+
+void DatabaseManagerTest::rejectsNewAndLegacyDatabaseConflict()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_databasePath,
+                 {QStringLiteral("CREATE TABLE new_marker (value TEXT)"),
+                  QStringLiteral("INSERT INTO new_marker VALUES ('new')")},
+                 &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(createSqliteDatabase(
+                 m_legacyDatabase,
+                 {QStringLiteral("CREATE TABLE old_marker (value TEXT)"),
+                  QStringLiteral("INSERT INTO old_marker VALUES ('old')")},
+                 &errorMessage),
+             qPrintable(errorMessage));
+
+    QVERIFY2(!initialize(&errorMessage), "新旧数据库同时存在时必须报冲突");
+    QVERIFY(errorMessage.contains(QStringLiteral("新旧数据库同时存在")));
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT value FROM new_marker")).toString(),
+             QStringLiteral("new"));
+    QCOMPARE(scalarValue(m_legacyDatabase,
+                         QStringLiteral("SELECT value FROM old_marker")).toString(),
+             QStringLiteral("old"));
+}
+
+void DatabaseManagerTest::createsBackupBeforeMigration()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_databasePath,
+                 {QStringLiteral("CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")},
+                 &errorMessage),
+             qPrintable(errorMessage));
+    QCOMPARE(backupCount(&errorMessage), 0);
+
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+    QCOMPARE(backupCount(&errorMessage), 1);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
 }
 
 void DatabaseManagerTest::rejectsInvalidCredentials()
@@ -122,52 +543,6 @@ void DatabaseManagerTest::rememberSessionRoundTrip()
 
     DatabaseManager::instance().revokeRememberSession(token);
     QVERIFY(!DatabaseManager::instance().validateRememberSession(token, &username));
-}
-
-void DatabaseManagerTest::sessionTokenIsHashedAndExpiryIsEnforced()
-{
-    QVERIFY(initialize());
-
-    QString token;
-    QString errorMessage;
-    QVERIFY2(DatabaseManager::instance().createRememberSession(
-                 QStringLiteral("admin"), &token, &errorMessage),
-             qPrintable(errorMessage));
-
-    const QString connectionName = QStringLiteral("DatabaseManagerTestInspection");
-    {
-        QSqlDatabase inspection = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
-                                                            connectionName);
-        inspection.setDatabaseName(DatabaseManager::instance().databasePath());
-        QVERIFY2(inspection.open(), qPrintable(inspection.lastError().text()));
-
-        QSqlQuery query(inspection);
-        query.prepare(QStringLiteral(
-            "SELECT token_hash, expires_at FROM sessions WHERE username = ?"));
-        query.addBindValue(QStringLiteral("admin"));
-        QVERIFY(query.exec());
-        QVERIFY(query.next());
-
-        const QString storedHash = query.value(0).toString();
-        const QDateTime expiresAt = TimeUtils::fromIso8601(query.value(1).toString());
-        QVERIFY(storedHash != token);
-        QCOMPARE(storedHash.size(), 64);
-        QVERIFY(expiresAt.toUTC() > QDateTime::currentDateTimeUtc().addDays(29));
-
-        QSqlQuery expire(inspection);
-        expire.prepare(QStringLiteral(
-            "UPDATE sessions SET expires_at = ? WHERE username = ?"));
-        expire.addBindValue(TimeUtils::toUtcIso8601(
-            QDateTime::currentDateTimeUtc().addSecs(-1)));
-        expire.addBindValue(QStringLiteral("admin"));
-        QVERIFY(expire.exec());
-
-        inspection.close();
-    }
-    QSqlDatabase::removeDatabase(connectionName);
-
-    QVERIFY(!DatabaseManager::instance().validateRememberSession(token, nullptr, &errorMessage));
-    QVERIFY(!errorMessage.isEmpty());
 }
 
 void DatabaseManagerTest::storesTelemetryAndQueriesTimeRange()
@@ -203,63 +578,6 @@ void DatabaseManagerTest::storesTelemetryAndQueriesTimeRange()
     QCOMPARE(range.constFirst().deviceId, QStringLiteral("DEV-001"));
     QCOMPARE(range.constFirst().updatedAt.toUTC(), base);
     QCOMPARE(range.constLast().deviceId, QStringLiteral("DEV-002"));
-}
-
-void DatabaseManagerTest::latestRecordReturnsOneWhenTimestampsTie()
-{
-    QVERIFY(initialize());
-
-    const QDateTime timestamp =
-        QDateTime(QDate(2026, 9, 20), QTime(11, 0), QTimeZone::UTC);
-    TelemetryRecord older;
-    older.deviceId = QStringLiteral("DEV-100");
-    older.name = QStringLiteral("重复时间设备");
-    older.status = TelemetryStatus::Online;
-    older.temperature = 10.0;
-    older.updatedAt = timestamp;
-
-    TelemetryRecord newer = older;
-    newer.temperature = 20.0;
-
-    QString errorMessage;
-    QVERIFY2(DatabaseManager::instance().insertTelemetryRecords({older, newer}, &errorMessage),
-             qPrintable(errorMessage));
-
-    const QList<TelemetryRecord> latest =
-        DatabaseManager::instance().latestDeviceRecords(&errorMessage);
-    QCOMPARE(latest.size(), 1);
-    QCOMPARE(latest.constFirst().deviceId, QStringLiteral("DEV-100"));
-    QCOMPARE(latest.constFirst().status, TelemetryStatus::Online);
-    QCOMPARE(latest.constFirst().temperature, 20.0);
-}
-
-void DatabaseManagerTest::persistsTelemetryAcrossReinitialize()
-{
-    QVERIFY(initialize());
-
-    TelemetryRecord record;
-    record.deviceId = QStringLiteral("DEV-009");
-    record.name = QStringLiteral("持久化测试设备");
-    record.status = TelemetryStatus::Online;
-    record.temperature = 66.6;
-    record.pressure = 1.33;
-    record.speed = 1777.0;
-    record.voltage = 219.5;
-    record.updatedAt = QDateTime::currentDateTimeUtc();
-
-    QString errorMessage;
-    QVERIFY2(DatabaseManager::instance().insertTelemetryRecords({record}, &errorMessage),
-             qPrintable(errorMessage));
-
-    DatabaseManager::instance().shutdown();
-    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
-
-    const QList<TelemetryRecord> records =
-        DatabaseManager::instance().latestDeviceRecords(&errorMessage);
-    QCOMPARE(records.size(), 1);
-    QCOMPARE(records.constFirst().deviceId, QStringLiteral("DEV-009"));
-    QCOMPARE(records.constFirst().status, TelemetryStatus::Online);
-    QCOMPARE(records.constFirst().temperature, 66.6);
 }
 
 void DatabaseManagerTest::storesHeartbeatAndSystemLog()

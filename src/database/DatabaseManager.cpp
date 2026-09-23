@@ -1,20 +1,39 @@
 #include "database/DatabaseManager.h"
 
+#include "database/DataDirectory.h"
 #include "utils/TimeUtils.h"
 
 #include <QCryptographicHash>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QLockFile>
 #include <QRandomGenerator>
 #include <QSqlError>
 #include <QSqlQuery>
-#include <QStandardPaths>
 #include <QVariant>
+#include <QUuid>
 
 namespace {
 constexpr int kPasswordIterations = 100000;
 constexpr int kPasswordKeyLength = 32;
+constexpr int kCurrentSchemaVersion = 1;
+constexpr int kBusyTimeoutMs = 5000;
 const char *kConnectionName = "mu_monitor_sqlite";
+
+QString quoteSqlString(QString value)
+{
+    value.replace(QLatin1Char('\''), QStringLiteral("''"));
+    return QStringLiteral("'") + value + QStringLiteral("'");
+}
+
+QString uniqueConnectionName(const QString &prefix)
+{
+    return prefix + QStringLiteral("-")
+        + QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
 }
 
 DatabaseManager &DatabaseManager::instance()
@@ -30,7 +49,9 @@ DatabaseManager::DatabaseManager()
 
 DatabaseManager::~DatabaseManager()
 {
-    shutdown();
+    if (QCoreApplication::instance()) {
+        shutdown();
+    }
 }
 
 bool DatabaseManager::initialize(QString *errorMessage)
@@ -39,47 +60,97 @@ bool DatabaseManager::initialize(QString *errorMessage)
         return true;
     }
 
-    const QString dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (dataDirectory.isEmpty()) {
-        m_lastError = QStringLiteral("无法获取应用数据目录");
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
+    if (m_database.isValid() || QSqlDatabase::contains(m_connectionName)) {
+        shutdown();
     }
 
-    if (!QDir().mkpath(dataDirectory)) {
-        m_lastError = QStringLiteral("无法创建应用数据目录：%1").arg(dataDirectory);
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
+    m_lastError.clear();
+    if (errorMessage) {
+        errorMessage->clear();
     }
 
-    m_databasePath = QDir(dataDirectory).filePath(QStringLiteral("mu-monitor.db"));
+    auto fail = [this, errorMessage](const QString &message) {
+        m_lastError = message;
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        shutdown();
+        return false;
+    };
+
+    QString resolveError;
+    const DataDirectory::Paths paths = DataDirectory::resolve(
+        QCoreApplication::arguments(), QCoreApplication::applicationDirPath(), &resolveError);
+    if (paths.root.isEmpty()) {
+        return fail(resolveError.isEmpty() ? QStringLiteral("无法解析数据目录")
+                                           : resolveError);
+    }
+
+    QString layoutError;
+    if (!DataDirectory::ensureLayout(paths, &layoutError)) {
+        return fail(layoutError);
+    }
+
+    m_databasePath = QDir(paths.database).filePath(QStringLiteral("mu-monitor.db"));
+    m_backupsDirectory = paths.backups;
 
     if (!QSqlDatabase::isDriverAvailable(QStringLiteral("QSQLITE"))) {
-        m_lastError = QStringLiteral("未找到 Qt SQLite 驱动 QSQLITE");
-        if (errorMessage) *errorMessage = m_lastError;
+        return fail(QStringLiteral("未找到 Qt SQLite 驱动 QSQLITE"));
+    }
+
+    QLockFile migrationLock(
+        QDir(paths.runtime).filePath(QStringLiteral("database-migration.lock")));
+    migrationLock.setStaleLockTime(30000);
+    if (!migrationLock.tryLock(10000)) {
+        return fail(QStringLiteral("无法获取数据库迁移锁，可能有另一个实例正在迁移：%1")
+                        .arg(static_cast<int>(migrationLock.error())));
+    }
+
+    const bool databaseExistsBeforeOpen = QFileInfo::exists(m_databasePath);
+    const bool legacyExists = !paths.legacyDatabase.isEmpty()
+        && QFileInfo::exists(paths.legacyDatabase);
+
+    if (databaseExistsBeforeOpen && legacyExists) {
+        return fail(QStringLiteral(
+            "新旧数据库同时存在，拒绝静默选择或自动合并。新数据库：%1；旧数据库：%2")
+                        .arg(m_databasePath, paths.legacyDatabase));
+    }
+
+    if (!databaseExistsBeforeOpen && legacyExists) {
+        if (!validateSqliteDatabase(paths.legacyDatabase, QStringLiteral("旧数据库"),
+                                    errorMessage)) {
+            return false;
+        }
+        if (!importLegacyDatabase(paths.legacyDatabase, m_databasePath, errorMessage)) {
+            return false;
+        }
+    }
+
+    const bool databaseExists = QFileInfo::exists(m_databasePath);
+    if (!checkDatabaseWritable(databaseExists, errorMessage)) {
         return false;
     }
 
     m_database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
     m_database.setDatabaseName(m_databasePath);
+    m_database.setConnectOptions(QStringLiteral("QSQLITE_BUSY_TIMEOUT=%1").arg(kBusyTimeoutMs));
 
     if (!m_database.open()) {
-        m_lastError = QStringLiteral("无法打开数据库：%1").arg(m_database.lastError().text());
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
+        return fail(QStringLiteral("无法打开数据库 %1：%2")
+                        .arg(m_databasePath, m_database.lastError().text()));
     }
 
-    if (!createTables(errorMessage)) {
-        return false;
+    if (!quickCheck(m_database, QStringLiteral("初始化数据库"), errorMessage)) {
+        return fail(m_lastError);
     }
-    if (!normalizeTimestampStorage(errorMessage)) {
-        return false;
+    if (!configureDatabase(errorMessage)) {
+        return fail(m_lastError);
     }
-    if (!normalizeTelemetryStatusStorage(errorMessage)) {
-        return false;
+    if (!migrateSchema(databaseExists, errorMessage)) {
+        return fail(m_lastError);
     }
     if (!ensureDefaultUser(errorMessage)) {
-        return false;
+        return fail(m_lastError);
     }
 
     m_initialized = true;
@@ -97,6 +168,387 @@ void DatabaseManager::shutdown()
         QSqlDatabase::removeDatabase(m_connectionName);
     }
     m_initialized = false;
+}
+
+bool DatabaseManager::checkDatabaseWritable(bool databaseExists, QString *errorMessage)
+{
+    const QString directory = QFileInfo(m_databasePath).absolutePath();
+    const QFileInfo directoryInfo(directory);
+    if (!directoryInfo.isDir() || !directoryInfo.isWritable()) {
+        m_lastError = QStringLiteral("数据库目录不可写：%1").arg(directory);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QFile probe(QDir(directory).filePath(
+        QStringLiteral(".write-probe-%1.tmp")
+            .arg(QUuid::createUuid().toString(QUuid::WithoutBraces))));
+    if (!probe.open(QIODevice::WriteOnly)) {
+        m_lastError = QStringLiteral("数据库目录不可写：%1").arg(directory);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const bool written = probe.write("1") == 1 && probe.flush();
+    probe.close();
+    if (!written || !QFile::remove(probe.fileName())) {
+        m_lastError = QStringLiteral("验证数据库目录可写性失败：%1").arg(directory);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    if (!databaseExists) {
+        return true;
+    }
+
+    const QFileInfo info(m_databasePath);
+    if (!info.isFile()) {
+        m_lastError = QStringLiteral("数据库路径不是普通文件：%1").arg(m_databasePath);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (!info.isWritable()) {
+        m_lastError = QStringLiteral("数据库文件不可写：%1").arg(m_databasePath);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QFile databaseFile(m_databasePath);
+    if (!databaseFile.open(QIODevice::ReadWrite | QIODevice::ExistingOnly)) {
+        m_lastError = QStringLiteral("无法以读写方式打开数据库：%1")
+                          .arg(databaseFile.errorString());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    databaseFile.close();
+    return true;
+}
+
+bool DatabaseManager::quickCheck(QSqlDatabase &database, const QString &context,
+                                 QString *errorMessage)
+{
+    QSqlQuery query(database);
+    if (!query.exec(QStringLiteral("PRAGMA quick_check"))) {
+        m_lastError = QStringLiteral("%1 quick_check 执行失败：%2")
+                          .arg(context, query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    bool foundResult = false;
+    while (query.next()) {
+        foundResult = true;
+        const QString result = query.value(0).toString();
+        if (result.compare(QStringLiteral("ok"), Qt::CaseInsensitive) != 0) {
+            m_lastError = QStringLiteral("%1 quick_check 失败：%2").arg(context, result);
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    if (!foundResult) {
+        m_lastError = QStringLiteral("%1 quick_check 未返回结果").arg(context);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::configureDatabase(QString *errorMessage)
+{
+    auto fail = [this, errorMessage](const QString &message) {
+        m_lastError = message;
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    };
+
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral("PRAGMA foreign_keys = ON"))) {
+        return fail(QStringLiteral("启用外键约束失败：%1").arg(query.lastError().text()));
+    }
+    if (!query.exec(QStringLiteral("PRAGMA journal_mode = WAL"))) {
+        return fail(QStringLiteral("启用 WAL 失败：%1").arg(query.lastError().text()));
+    }
+    if (!query.exec(QStringLiteral("PRAGMA busy_timeout = %1").arg(kBusyTimeoutMs))) {
+        return fail(QStringLiteral("设置 busy_timeout 失败：%1").arg(query.lastError().text()));
+    }
+
+    if (!query.exec(QStringLiteral("PRAGMA foreign_keys"))
+        || !query.next() || query.value(0).toInt() != 1) {
+        return fail(QStringLiteral("外键约束未启用：%1").arg(query.lastError().text()));
+    }
+    if (!query.exec(QStringLiteral("PRAGMA busy_timeout"))
+        || !query.next() || query.value(0).toInt() != kBusyTimeoutMs) {
+        return fail(QStringLiteral("busy_timeout 未生效：%1").arg(query.lastError().text()));
+    }
+    if (!query.exec(QStringLiteral("PRAGMA journal_mode"))
+        || !query.next()
+        || query.value(0).toString().compare(QStringLiteral("wal"), Qt::CaseInsensitive) != 0) {
+        return fail(QStringLiteral("SQLite 未运行在 WAL 模式：%1").arg(query.lastError().text()));
+    }
+    return true;
+}
+
+bool DatabaseManager::readSchemaVersion(bool *hasVersionTable, int *version,
+                                        QString *errorMessage)
+{
+    if (!hasVersionTable || !version) {
+        m_lastError = QStringLiteral("读取 schema_version 的参数无效");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery tableQuery(m_database);
+    tableQuery.prepare(QStringLiteral(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"));
+    if (!tableQuery.exec()) {
+        m_lastError = QStringLiteral("检查 schema_version 表失败：%1")
+                          .arg(tableQuery.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    *hasVersionTable = tableQuery.next();
+    *version = 0;
+    if (!*hasVersionTable) {
+        return true;
+    }
+
+    QSqlQuery versionQuery(m_database);
+    if (!versionQuery.exec(QStringLiteral("SELECT MAX(version) FROM schema_version"))) {
+        m_lastError = QStringLiteral("读取数据库版本失败：%1")
+                          .arg(versionQuery.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (!versionQuery.next()) {
+        m_lastError = QStringLiteral("读取数据库版本未返回结果");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    if (versionQuery.value(0).isNull()) {
+        return true;
+    }
+
+    bool ok = false;
+    const int parsedVersion = versionQuery.value(0).toInt(&ok);
+    if (!ok || parsedVersion < 0) {
+        m_lastError = QStringLiteral("schema_version 内容无效");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    *version = parsedVersion;
+    return true;
+}
+
+bool DatabaseManager::migrateSchema(bool databaseExisted, QString *errorMessage)
+{
+    bool hasVersionTable = false;
+    int currentVersion = 0;
+    if (!readSchemaVersion(&hasVersionTable, &currentVersion, errorMessage)) {
+        return false;
+    }
+
+    if (currentVersion > kCurrentSchemaVersion) {
+        m_lastError = QStringLiteral("数据库版本 %1 高于程序支持版本 %2，拒绝降级")
+                          .arg(currentVersion)
+                          .arg(kCurrentSchemaVersion);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (currentVersion == kCurrentSchemaVersion) {
+        return true;
+    }
+
+    if (databaseExisted) {
+        if (!backupDatabase(currentVersion, errorMessage)) {
+            return false;
+        }
+    }
+
+    if (!m_database.transaction()) {
+        m_lastError = QStringLiteral("无法开始数据库迁移事务：%1")
+                          .arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    auto rollbackFail = [this, errorMessage](const QString &message) {
+        m_database.rollback();
+        m_lastError = message;
+        if (errorMessage) *errorMessage = message;
+        return false;
+    };
+
+    QSqlQuery versionTableQuery(m_database);
+    if (!versionTableQuery.exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS schema_version ("
+            "version INTEGER PRIMARY KEY,"
+            "description TEXT NOT NULL,"
+            "applied_at TEXT NOT NULL)"))) {
+        return rollbackFail(QStringLiteral("创建 schema_version 表失败：%1")
+                                .arg(versionTableQuery.lastError().text()));
+    }
+
+    for (int targetVersion = currentVersion + 1;
+         targetVersion <= kCurrentSchemaVersion; ++targetVersion) {
+        QString migrationError;
+        if (targetVersion == 1) {
+            if (!createTables(&migrationError)
+                || !normalizeTimestampStorage(&migrationError)
+                || !normalizeTelemetryStatusStorage(&migrationError)) {
+                return rollbackFail(migrationError);
+            }
+        } else {
+            return rollbackFail(QStringLiteral("缺少数据库迁移 %1").arg(targetVersion));
+        }
+
+        QSqlQuery recordVersion(m_database);
+        recordVersion.prepare(QStringLiteral(
+            "INSERT INTO schema_version (version, description, applied_at) "
+            "VALUES (?, ?, ?)"));
+        recordVersion.addBindValue(targetVersion);
+        recordVersion.addBindValue(QStringLiteral("基线数据库结构"));
+        recordVersion.addBindValue(TimeUtils::toUtcIso8601());
+        if (!recordVersion.exec()) {
+            return rollbackFail(QStringLiteral("记录数据库版本 %1 失败：%2")
+                                    .arg(targetVersion)
+                                    .arg(recordVersion.lastError().text()));
+        }
+    }
+
+    if (!m_database.commit()) {
+        m_database.rollback();
+        m_lastError = QStringLiteral("提交数据库迁移失败：%1")
+                          .arg(m_database.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::backupDatabase(int fromVersion, QString *errorMessage)
+{
+    if (m_backupsDirectory.isEmpty()) {
+        m_lastError = QStringLiteral("备份目录未配置");
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    if (!QDir().mkpath(m_backupsDirectory)) {
+        m_lastError = QStringLiteral("无法创建备份目录：%1").arg(m_backupsDirectory);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString timestamp =
+        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-hhmmss-zzz"));
+    const QString backupName = QStringLiteral("mu-monitor-before-v%1-%2-%3.db")
+                                   .arg(fromVersion)
+                                   .arg(timestamp,
+                                        QUuid::createUuid().toString(QUuid::WithoutBraces).left(8));
+    const QString backupPath = QDir(m_backupsDirectory).filePath(backupName);
+
+    QSqlQuery backup(m_database);
+    if (!backup.exec(QStringLiteral("VACUUM INTO %1").arg(quoteSqlString(backupPath)))) {
+        QFile::remove(backupPath);
+        m_lastError = QStringLiteral("迁移前备份数据库失败：%1")
+                          .arg(backup.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::validateSqliteDatabase(const QString &databasePath,
+                                             const QString &context,
+                                             QString *errorMessage)
+{
+    const QFileInfo info(databasePath);
+    if (!info.isFile()) {
+        m_lastError = QStringLiteral("%1不存在或不是普通文件：%2").arg(context, databasePath);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString connectionName = uniqueConnectionName(QStringLiteral("mu_monitor_validate"));
+    bool valid = false;
+    QString validationError;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                          connectionName);
+        database.setDatabaseName(databasePath);
+        database.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        if (!database.open()) {
+            validationError = QStringLiteral("无法只读打开%1：%2")
+                                  .arg(context, database.lastError().text());
+        } else {
+            valid = quickCheck(database, context, &validationError);
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    if (!valid) {
+        m_lastError = validationError;
+        if (errorMessage) *errorMessage = validationError;
+    }
+    return valid;
+}
+
+bool DatabaseManager::importLegacyDatabase(const QString &sourcePath,
+                                           const QString &destinationPath,
+                                           QString *errorMessage)
+{
+    if (QFileInfo::exists(destinationPath)) {
+        m_lastError = QStringLiteral("导入旧数据库时目标数据库已存在：%1")
+                          .arg(destinationPath);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString temporaryPath = destinationPath + QStringLiteral(".import-")
+        + QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".tmp");
+    const QString connectionName = uniqueConnectionName(QStringLiteral("mu_monitor_legacy"));
+    bool copied = false;
+    QString copyError;
+    {
+        QSqlDatabase source = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        connectionName);
+        source.setDatabaseName(sourcePath);
+        source.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        if (!source.open()) {
+            copyError = QStringLiteral("无法只读打开旧数据库 %1：%2")
+                            .arg(sourcePath, source.lastError().text());
+        } else {
+            QSqlQuery copy(source);
+            if (!copy.exec(QStringLiteral("VACUUM INTO %1")
+                               .arg(quoteSqlString(temporaryPath)))) {
+                copyError = QStringLiteral("复制旧数据库失败：%1")
+                                .arg(copy.lastError().text());
+            } else {
+                copied = true;
+            }
+            source.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    if (!copied) {
+        QFile::remove(temporaryPath);
+        m_lastError = copyError;
+        if (errorMessage) *errorMessage = copyError;
+        return false;
+    }
+
+    if (!QFile::rename(temporaryPath, destinationPath)) {
+        QFile::remove(temporaryPath);
+        m_lastError = QStringLiteral("无法将旧数据库副本移动到新位置：%1")
+                          .arg(destinationPath);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+    return true;
 }
 
 bool DatabaseManager::createTables(QString *errorMessage)
@@ -267,12 +719,6 @@ bool DatabaseManager::normalizeTimestampStorage(QString *errorMessage)
         return true;
     }
 
-    if (!m_database.transaction()) {
-        m_lastError = QStringLiteral("无法开始时间戳迁移事务：%1").arg(m_database.lastError().text());
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
-    }
-
     const QList<QPair<QString, QString>> timestampColumns = {
         {QStringLiteral("users"), QStringLiteral("created_at")},
         {QStringLiteral("sessions"), QStringLiteral("expires_at")},
@@ -295,7 +741,6 @@ bool DatabaseManager::normalizeTimestampStorage(QString *errorMessage)
         select.prepare(selectSql);
         select.addBindValue(standardTimestampPattern);
         if (!select.exec()) {
-            m_database.rollback();
             m_lastError = QStringLiteral("读取 %1.%2 历史时间戳失败：%3")
                               .arg(timestampColumn.first, timestampColumn.second,
                                    select.lastError().text());
@@ -320,7 +765,6 @@ bool DatabaseManager::normalizeTimestampStorage(QString *errorMessage)
             update.addBindValue(TimeUtils::toUtcIso8601(timestamp));
             update.addBindValue(legacyRow.first);
             if (!update.exec()) {
-                m_database.rollback();
                 m_lastError = QStringLiteral("迁移 %1.%2 时间戳失败：%3")
                                   .arg(timestampColumn.first, timestampColumn.second,
                                        update.lastError().text());
@@ -335,15 +779,7 @@ bool DatabaseManager::normalizeTimestampStorage(QString *errorMessage)
     marker.addBindValue(migrationKey);
     marker.addBindValue(TimeUtils::toUtcIso8601());
     if (!marker.exec()) {
-        m_database.rollback();
         m_lastError = QStringLiteral("记录时间戳迁移状态失败：%1").arg(marker.lastError().text());
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
-    }
-
-    if (!m_database.commit()) {
-        m_database.rollback();
-        m_lastError = QStringLiteral("提交时间戳迁移失败：%1").arg(m_database.lastError().text());
         if (errorMessage) *errorMessage = m_lastError;
         return false;
     }

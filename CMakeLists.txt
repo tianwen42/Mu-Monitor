@@ -86,6 +86,8 @@ qt_add_executable(Mu-Monitor
     src/core/TelemetrySample.cpp
     src/core/TelemetrySample.h
     src/core/DeviceInfo.h
+    src/database/DataDirectory.cpp
+    src/database/DataDirectory.h
     src/database/DatabaseManager.cpp
     src/database/DatabaseManager.h
     src/ui/LoginDialog.cpp

@@ -88,10 +88,22 @@ target_link_libraries(TelemetryTableModelTest PRIVATE
     Qt::Test
 )
 
+mu_add_test(DataDirectoryTest
+    DataDirectoryTest.cpp
+    ../src/database/DataDirectory.cpp
+    ../src/database/DataDirectory.h
+)
+target_link_libraries(DataDirectoryTest PRIVATE
+    Qt::Core
+    Qt::Test
+)
+
 mu_add_test(DatabaseManagerTest
     DatabaseManagerTest.cpp
     ../src/core/BusinessStates.cpp
     ../src/core/BusinessStates.h
+    ../src/database/DataDirectory.cpp
+    ../src/database/DataDirectory.h
     ../src/database/DatabaseManager.cpp
     ../src/database/DatabaseManager.h
     ../src/utils/TimeUtils.cpp
@@ -146,6 +158,8 @@ mu_add_test(MainWindowResponsiveTest
     ../src/core/TelemetrySample.cpp
     ../src/core/TelemetrySample.h
     ../src/core/HeartbeatRecord.h
+    ../src/database/DataDirectory.cpp
+    ../src/database/DataDirectory.h
     ../src/database/DatabaseManager.cpp
     ../src/database/DatabaseManager.h
     ../src/app/AppController.cpp
