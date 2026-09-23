@@ -9,6 +9,8 @@
 #include "utils/TimeUtils.h"
 #include "ui/SettingsDialog.h"
 #include "ui/AboutDialog.h"
+#include "ui/UserManagementDialog.h"
+#include "auth/AuthTypes.h"
 
 #include <QAction>
 #include <QApplication>
@@ -239,12 +241,17 @@ void MainWindow::setupUi()
     }
     ui->alarmTitle->setText(QStringLiteral("告警记录 · 点击告警可定位设备"));
 
-    const QString role = m_controller->currentUserRole();
-    const QString roleText = role == QStringLiteral("admin")
-        ? QStringLiteral("管理员")
-        : QStringLiteral("普通用户");
+    QString role = m_controller->currentUserRole();
+    if (!Auth::isValidRole(role)) {
+        role = QStringLiteral("viewer");
+    }
+    m_canControlCollection = Auth::hasPermission(
+        role, Auth::Permission::ControlCollection);
+    ui->historyTab->setEnabled(Auth::hasPermission(
+        role, Auth::Permission::ViewHistory));
     ui->currentUserLabel->setText(
-        QStringLiteral("账号：%1（%2）").arg(m_currentUser, roleText));
+        QStringLiteral("账号：%1（%2）").arg(m_currentUser, Auth::roleDisplayName(role)));
+
     ui->currentUserLabel->setProperty("fullText", ui->currentUserLabel->text());
     ui->currentUserLabel->setToolTip(
         QStringLiteral("登录时间：%1\n数据库：%2")
@@ -375,6 +382,12 @@ void MainWindow::setupDocks()
 
 void MainWindow::setupToolBar()
 {
+    const QString role = m_controller->currentUserRole();
+    const bool canManageUsers = Auth::hasPermission(role, Auth::Permission::ManageUsers);
+    const bool canAcknowledgeAlarm = Auth::hasPermission(role, Auth::Permission::AcknowledgeAlarm);
+    const bool canModifySettings = Auth::hasPermission(role, Auth::Permission::ModifySettings);
+
+
     auto *toolBar = addToolBar(QStringLiteral("主工具栏"));
     toolBar->setObjectName(QStringLiteral("mainToolBar"));
     toolBar->setMovable(false);
@@ -387,6 +400,7 @@ void MainWindow::setupToolBar()
 
     QAction *collectAction = new QAction(
         style()->standardIcon(QStyle::SP_MediaPlay), QStringLiteral("开始/暂停采集"), this);
+    collectAction->setEnabled(m_canControlCollection);
     connect(collectAction, &QAction::triggered, ui->startButton, &QPushButton::click);
     toolBar->addAction(collectAction);
 
@@ -402,17 +416,46 @@ void MainWindow::setupToolBar()
 
     QAction *clearAction = new QAction(
         style()->standardIcon(QStyle::SP_DialogResetButton), QStringLiteral("清空告警"), this);
+    clearAction->setEnabled(canAcknowledgeAlarm);
     connect(clearAction, &QAction::triggered, ui->clearAlarmButton, &QPushButton::click);
     toolBar->addAction(clearAction);
 
     QAction *optionsAction = new QAction(
         style()->standardIcon(QStyle::SP_FileDialogDetailedView), QStringLiteral("设置"), this);
     optionsAction->setShortcut(QKeySequence::Preferences);
+    optionsAction->setEnabled(canModifySettings);
     connect(optionsAction, &QAction::triggered, this, [this]() {
         SettingsDialog dialog(this);
         dialog.exec();
     });
     toolBar->addAction(optionsAction);
+
+    toolBar->addSeparator();
+
+    QAction *userManagementAction = new QAction(
+        style()->standardIcon(QStyle::SP_FileDialogListView),
+        QStringLiteral("用户管理"), this);
+    userManagementAction->setObjectName(QStringLiteral("userManagementAction"));
+    userManagementAction->setEnabled(canManageUsers);
+    connect(userManagementAction, &QAction::triggered, this, [this]() {
+        UserManagementDialog dialog(m_currentUser,
+                                    UserManagementDialog::Mode::Management,
+                                    this);
+        dialog.exec();
+    });
+    toolBar->addAction(userManagementAction);
+
+    QAction *changePasswordAction = new QAction(
+        style()->standardIcon(QStyle::SP_DialogApplyButton),
+        QStringLiteral("修改密码"), this);
+    changePasswordAction->setObjectName(QStringLiteral("changePasswordAction"));
+    connect(changePasswordAction, &QAction::triggered, this, [this]() {
+        UserManagementDialog dialog(m_currentUser,
+                                    UserManagementDialog::Mode::PasswordOnly,
+                                    this);
+        dialog.exec();
+    });
+    toolBar->addAction(changePasswordAction);
 
     toolBar->addSeparator();
 
@@ -451,6 +494,7 @@ void MainWindow::setupTrayIcon()
     });
 
     QAction *collectAction = trayMenu->addAction(QStringLiteral("开始/暂停采集"));
+    collectAction->setEnabled(m_canControlCollection);
     connect(collectAction, &QAction::triggered, ui->startButton, &QPushButton::click);
 
     trayMenu->addSeparator();
@@ -524,9 +568,11 @@ void MainWindow::setupConnections()
                 menu.addSeparator();
                 QAction *startAction = menu.addAction(QStringLiteral("开始设备采集"));
                 QAction *stopAction = menu.addAction(QStringLiteral("停止设备采集"));
-                startAction->setEnabled(m_connectionState == ConnectionState::Connected && !collecting);
-                stopAction->setEnabled(m_connectionState == ConnectionState::Connected && collecting);
-                QAction *selected = menu.exec(
+                const bool controllable =
+                    m_connectionState == ConnectionState::Connected
+                    && m_canControlCollection;
+                startAction->setEnabled(controllable && !collecting);
+                stopAction->setEnabled(controllable && collecting);                QAction *selected = menu.exec(
                     ui->deviceList->viewport()->mapToGlobal(position));
 
                 if (selected == editAction) {
@@ -858,7 +904,7 @@ void MainWindow::onDeviceSelectionChanged(int row)
 
 void MainWindow::startDeviceCollection(int index)
 {
-    if (index < 0 || index >= m_deviceIds.size()) {
+    if (!m_canControlCollection || index < 0 || index >= m_deviceIds.size()) {
         return;
     }
     m_controller->setDeviceCollection(m_deviceIds.at(index), true);
@@ -866,7 +912,7 @@ void MainWindow::startDeviceCollection(int index)
 
 void MainWindow::stopDeviceCollection(int index)
 {
-    if (index < 0 || index >= m_deviceIds.size()) {
+    if (!m_canControlCollection || index < 0 || index >= m_deviceIds.size()) {
         return;
     }
     m_controller->setDeviceCollection(m_deviceIds.at(index), false);
@@ -1143,7 +1189,8 @@ void MainWindow::updateDeviceControlState()
         m_overviewDeviceMetricsLabel->setToolTip(QString());
     }
 
-    const bool controllable = m_connectionState == ConnectionState::Connected;
+    const bool controllable =
+        m_connectionState == ConnectionState::Connected && m_canControlCollection;
     ui->startSelectedDeviceButton->setEnabled(controllable && !collecting);
     ui->stopSelectedDeviceButton->setEnabled(controllable && collecting);
 }
@@ -1182,7 +1229,7 @@ void MainWindow::onConnectionStateChanged(ConnectionState state)
         ui->connectionStatusLabel->setText(QStringLiteral("● 心跳检测中"));
         ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#22c55e;"));
         ui->connectButton->setText(QStringLiteral("停止检测"));
-        ui->startButton->setEnabled(true);
+        ui->startButton->setEnabled(m_canControlCollection);
         ui->statusbar->showMessage(
             QStringLiteral("设备心跳检测与数据采集已启动"), 4000);
         if (m_logOutput) {
@@ -1237,7 +1284,7 @@ void MainWindow::onConnectClicked()
 
 void MainWindow::onStartClicked()
 {
-    if (m_connectionState != ConnectionState::Connected) {
+    if (m_connectionState != ConnectionState::Connected || !m_canControlCollection) {
         return;
     }
 

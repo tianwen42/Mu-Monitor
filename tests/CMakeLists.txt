@@ -180,6 +180,8 @@ mu_add_test(MainWindowResponsiveTest
     ../src/ui/SettingsDialog.h
     ../src/ui/AboutDialog.cpp
     ../src/ui/AboutDialog.h
+    ../src/ui/UserManagementDialog.cpp
+    ../src/ui/UserManagementDialog.h
     ../src/utils/ExcelExporter.cpp
     ../src/utils/ExcelExporter.h
     ../src/utils/TimeUtils.cpp
@@ -194,6 +196,7 @@ target_link_libraries(MainWindowResponsiveTest PRIVATE
     Qt::Gui
     Qt::Widgets
     Qt::Sql
+    mu_auth
     Qt::Test
     QXlsx::QXlsx
 )
@@ -246,6 +249,7 @@ target_link_libraries(ApplicationLayerTest PRIVATE
 set_tests_properties(ApplicationLayerTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
 mu_add_test(ProtocolPayloadMapperTest
     ProtocolPayloadMapperTest.cpp
     ../src/core/Device.cpp
@@ -258,4 +262,20 @@ mu_add_test(ProtocolPayloadMapperTest
 target_link_libraries(ProtocolPayloadMapperTest PRIVATE
     Qt::Core
     Qt::Test
+)
+
+mu_add_test(UserManagementTest
+    UserManagementTest.cpp
+    ../src/core/BusinessStates.cpp
+    ../src/core/BusinessStates.h
+    ../src/database/DatabaseManager.cpp
+    ../src/database/DatabaseManager.h
+    ../src/utils/TimeUtils.cpp
+    ../src/utils/TimeUtils.h
+)
+target_link_libraries(UserManagementTest PRIVATE
+    Qt::Core
+    Qt::Sql
+    Qt::Test
+    mu_auth
 )

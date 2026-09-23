@@ -18,6 +18,11 @@ if(WIN32)
     set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/resources")
 endif()
 
+set(MU_WINDOWS_RESOURCE)
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc")
+    set(MU_WINDOWS_RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc")
+endif()
+
 add_subdirectory(third_party/QXlsx)
 
 qt_standard_project_setup()
@@ -57,6 +62,28 @@ target_link_libraries(mu_network PUBLIC
 mu_enable_warnings(mu_network)
 include(CTest)
 
+set(MU_AUTH_SOURCES
+    src/auth/AuthenticationService.cpp
+    src/auth/AuthenticationService.h
+    src/auth/AuditRepository.cpp
+    src/auth/AuditRepository.h
+    src/auth/AuthTypes.cpp
+    src/auth/AuthTypes.h
+    src/auth/PasswordService.cpp
+    src/auth/PasswordService.h
+    src/auth/UserManagementService.cpp
+    src/auth/UserManagementService.h
+    src/database/PasswordRepository.cpp
+    src/database/PasswordRepository.h
+    src/database/UserRepository.cpp
+    src/database/UserRepository.h
+)
+
+add_library(mu_auth STATIC ${MU_AUTH_SOURCES})
+mu_enable_warnings(mu_auth)
+target_include_directories(mu_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(mu_auth PUBLIC Qt::Core Qt::Sql)
+
 option(BUILD_DEVICE_SIMULATOR "Build the standalone TCP device simulator" ON)
 if(BUILD_DEVICE_SIMULATOR)
     add_subdirectory(tools/DeviceSimulator)
@@ -92,6 +119,8 @@ qt_add_executable(Mu-Monitor
     src/database/DatabaseManager.h
     src/ui/LoginDialog.cpp
     src/ui/LoginDialog.h
+    src/ui/UserManagementDialog.cpp
+    src/ui/UserManagementDialog.h
     src/ui/mainwindow.cpp
     src/ui/mainwindow.h
     src/ui/mainwindow.ui
@@ -135,6 +164,7 @@ target_link_libraries(Mu-Monitor
         Qt::Widgets
         Qt::Sql
         mu_network
+        mu_auth
         QXlsx::QXlsx
 )
 

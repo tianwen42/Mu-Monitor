@@ -100,6 +100,7 @@ private:
     QPlainTextEdit *m_logOutput = nullptr;
     QSystemTrayIcon *m_trayIcon = nullptr;
     bool m_forceQuit = false;
+    bool m_canControlCollection = false;
     bool m_trayMessageShown = false;
     QStringList m_deviceIds;
     QStringList m_deviceNames;

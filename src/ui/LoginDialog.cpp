@@ -1,6 +1,11 @@
 #include "ui/LoginDialog.h"
 
+#include "auth/AuditRepository.h"
+#include "auth/AuthenticationService.h"
+#include "auth/PasswordService.h"
 #include "database/DatabaseManager.h"
+#include "database/PasswordRepository.h"
+#include "database/UserRepository.h"
 
 #include <QCheckBox>
 #include <QDialogButtonBox>
@@ -121,18 +126,20 @@ void LoginDialog::attemptLogin()
     const QString name = username();
     const QString password = m_passwordEdit->text();
 
-    if (name.isEmpty() || password.isEmpty()) {
-        DatabaseManager::instance().insertLog(
-            QStringLiteral("WARN"), QStringLiteral("auth"), QStringLiteral("登录失败：用户名或密码为空"));
-        QMessageBox::warning(this, QStringLiteral("登录失败"), QStringLiteral("请输入用户名和密码。"));
-        return;
-    }
+    UserRepository users;
+    PasswordRepository passwords;
+    PasswordService passwordService;
+    AuditRepository audit;
+    AuthenticationService authentication(users, passwords, passwordService, audit);
 
-    if (!DatabaseManager::instance().validateUser(name, password)) {
-        DatabaseManager::instance().insertLog(
-            QStringLiteral("WARN"), QStringLiteral("auth"),
-            QStringLiteral("登录失败：用户名或密码错误，用户名 %1").arg(name));
-        QMessageBox::warning(this, QStringLiteral("登录失败"), QStringLiteral("用户名或密码错误。"));
+    QString authenticationError;
+    if (!authentication.authenticate(name, password, nullptr, &authenticationError)) {
+        QMessageBox::warning(
+            this,
+            QStringLiteral("登录失败"),
+            authenticationError.isEmpty()
+                ? QStringLiteral("用户名或密码错误。")
+                : authenticationError);
         m_passwordEdit->clear();
         m_passwordEdit->setFocus();
         return;
@@ -163,8 +170,5 @@ void LoginDialog::attemptLogin()
         settings.remove(QStringLiteral("auth/rememberUsername"));
     }
 
-    DatabaseManager::instance().insertLog(
-        QStringLiteral("INFO"), QStringLiteral("auth"),
-        QStringLiteral("用户登录成功：%1").arg(name));
     accept();
 }
