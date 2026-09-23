@@ -5,6 +5,8 @@ qt_add_executable(DeviceSimulator
     main.cpp
     DeviceSimulatorServer.cpp
     DeviceSimulatorServer.h
+    FrameEncoder.cpp
+    FrameEncoder.h
     DeviceSimulatorWindow.cpp
     DeviceSimulatorWindow.h
 )
@@ -17,4 +19,5 @@ target_link_libraries(DeviceSimulator
         Qt::Gui
         Qt::Widgets
         Qt::Network
+        mu_protocol
 )

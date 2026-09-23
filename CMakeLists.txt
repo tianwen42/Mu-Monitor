@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(Mu-Monitor VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql LinguistTools)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql Network LinguistTools)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +22,39 @@ add_subdirectory(third_party/QXlsx)
 
 qt_standard_project_setup()
 set(CMAKE_AUTORCC ON)
+
+add_library(mu_protocol STATIC
+    src/protocol/CRC16.cpp
+    src/protocol/CRC16.h
+    src/protocol/Frame.h
+    src/protocol/FrameCodec.cpp
+    src/protocol/FrameCodec.h
+    src/protocol/Protocol.cpp
+    src/protocol/Protocol.h
+)
+target_include_directories(mu_protocol PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(mu_protocol PUBLIC Qt::Core)
+mu_enable_warnings(mu_protocol)
+
+add_library(mu_network STATIC
+    src/network/FrameDecoder.cpp
+    src/network/FrameDecoder.h
+    src/network/TcpConnectionWorker.cpp
+    src/network/TcpConnectionWorker.h
+    src/network/TcpDeviceDataSource.cpp
+    src/network/TcpDeviceDataSource.h
+)
+target_include_directories(mu_network PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(mu_network PUBLIC
+    Qt::Core
+    Qt::Network
+    mu_protocol
+)
+mu_enable_warnings(mu_network)
 include(CTest)
 
 option(BUILD_DEVICE_SIMULATOR "Build the standalone TCP device simulator" ON)
@@ -73,8 +106,11 @@ qt_add_executable(Mu-Monitor
     src/utils/TimeUtils.cpp
     src/utils/TimeUtils.h
     resources/resources.qrc
-    resources/app.rc
 )
+
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc")
+    target_sources(Mu-Monitor PRIVATE resources/app.rc)
+endif()
 
 mu_enable_warnings(Mu-Monitor)
 
@@ -96,6 +132,7 @@ target_link_libraries(Mu-Monitor
         Qt::Core
         Qt::Widgets
         Qt::Sql
+        mu_network
         QXlsx::QXlsx
 )
 

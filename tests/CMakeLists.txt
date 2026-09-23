@@ -10,10 +10,31 @@ function(mu_add_test target)
     set_tests_properties(${target} PROPERTIES TIMEOUT 60)
 endfunction()
 
+mu_add_test(ProtocolCodecTest
+    ProtocolCodecTest.cpp
+)
+target_link_libraries(ProtocolCodecTest PRIVATE
+    Qt::Core
+    Qt::Test
+    mu_network
+)
+
+mu_add_test(TcpDeviceDataSourceTest
+    TcpDeviceDataSourceTest.cpp
+)
+target_link_libraries(TcpDeviceDataSourceTest PRIVATE
+    Qt::Core
+    Qt::Network
+    Qt::Test
+    mu_network
+)
+
 mu_add_test(DeviceSimulatorServerTest
     DeviceSimulatorServerTest.cpp
     ../tools/DeviceSimulator/DeviceSimulatorServer.cpp
     ../tools/DeviceSimulator/DeviceSimulatorServer.h
+    ../tools/DeviceSimulator/FrameEncoder.cpp
+    ../tools/DeviceSimulator/FrameEncoder.h
 )
 target_include_directories(DeviceSimulatorServerTest PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../tools/DeviceSimulator
@@ -22,6 +43,7 @@ target_link_libraries(DeviceSimulatorServerTest PRIVATE
     Qt::Core
     Qt::Network
     Qt::Test
+    mu_network
 )
 
 mu_add_test(TimeUtilsTest

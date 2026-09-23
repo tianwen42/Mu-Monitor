@@ -1,5 +1,7 @@
 #include "DeviceSimulatorServer.h"
 
+#include <network/FrameDecoder.h>
+
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,6 +14,7 @@ class DeviceSimulatorServerTest : public QObject
 
 private slots:
     void sendsNewlineDelimitedJson();
+    void sendsProtocolV1FramesWhenEnabled();
     void highTemperatureScenarioIsReported();
     void highPressureScenarioIsReported();
     void offlineScenarioIsReported();
@@ -67,6 +70,58 @@ void DeviceSimulatorServerTest::sendsNewlineDelimitedJson()
     QVERIFY(object.value(QStringLiteral("deviceId")).toString().startsWith(QStringLiteral("DEV-")));
     QVERIFY(object.contains(QStringLiteral("temperature")));
     QVERIFY(object.contains(QStringLiteral("pressure")));
+}
+
+void DeviceSimulatorServerTest::sendsProtocolV1FramesWhenEnabled()
+{
+    DeviceSimulatorServer server;
+    QCOMPARE(server.wireFormat(), DeviceSimulatorServer::WireFormat::JsonLines);
+    server.setWireFormat(DeviceSimulatorServer::WireFormat::ProtocolV1);
+
+    QString errorMessage;
+    QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
+             qPrintable(errorMessage));
+
+    QTcpSocket client;
+    client.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(client.waitForConnected(1000));
+
+    FrameDecoder decoder;
+    Frame received;
+    bool decoded = false;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 3500 && !decoded) {
+        if (client.bytesAvailable() > 0) {
+            decoder.appendData(client.readAll());
+        }
+        while (decoder.hasEvents()) {
+            const FrameDecoder::Event event = decoder.takeNextEvent();
+            if (event.type == FrameDecoder::EventType::DecodedFrame) {
+                received = event.frame;
+                decoded = true;
+                break;
+            }
+            QFAIL(qPrintable(event.message));
+        }
+        if (!decoded) {
+            QTest::qWait(50);
+        }
+    }
+
+    QVERIFY2(decoded, "未在超时时间内收到 Protocol v1 帧");
+    QCOMPARE(received.version, quint8(Protocol::Version1));
+    QCOMPARE(received.messageType, Protocol::MessageType::Telemetry);
+    QCOMPARE(received.sequence, 0U);
+    QVERIFY(received.deviceId.startsWith(QStringLiteral("DEV-")));
+    QVERIFY(qAbs(received.timestampUtcMs - QDateTime::currentMSecsSinceEpoch()) < 10000);
+    QVERIFY(!received.payload.endsWith('\n'));
+
+    QJsonParseError parseError;
+    const QJsonDocument payload = QJsonDocument::fromJson(received.payload, &parseError);
+    QCOMPARE(parseError.error, QJsonParseError::NoError);
+    QVERIFY(payload.isObject());
+    QVERIFY(payload.object().contains(QStringLiteral("temperature")));
 }
 
 void DeviceSimulatorServerTest::highTemperatureScenarioIsReported()

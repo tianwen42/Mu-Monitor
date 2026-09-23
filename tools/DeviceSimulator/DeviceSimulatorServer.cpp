@@ -1,5 +1,7 @@
 #include "DeviceSimulatorServer.h"
 
+#include "FrameEncoder.h"
+
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -114,6 +116,23 @@ QString DeviceSimulatorServer::scenarioText(const QString &deviceId) const
     return device ? scenarioName(device->scenario) : QString();
 }
 
+DeviceSimulatorServer::WireFormat DeviceSimulatorServer::wireFormat() const
+{
+    return m_wireFormat;
+}
+
+void DeviceSimulatorServer::setWireFormat(WireFormat format)
+{
+    if (m_wireFormat == format) {
+        return;
+    }
+
+    m_wireFormat = format;
+    emit logMessage(m_wireFormat == WireFormat::ProtocolV1
+                        ? QStringLiteral("[协议] 已切换为 Protocol v1 二进制帧")
+                        : QStringLiteral("[协议] 已切换为 JSON Lines 兼容模式"));
+}
+
 void DeviceSimulatorServer::handleNewConnection()
 {
     while (QTcpSocket *client = m_server.nextPendingConnection()) {
@@ -170,7 +189,19 @@ void DeviceSimulatorServer::sendTelemetry()
             device.voltage = 220.0 + jitter(5.0);
         }
 
-        const QByteArray payload = createPayload(device);
+        QByteArray payload = createJsonPayload(device);
+        if (m_wireFormat == WireFormat::ProtocolV1) {
+            QString errorMessage;
+            payload = FrameEncoder::encodeTelemetry(device.id, m_sequence++, payload, &errorMessage);
+            if (payload.isEmpty()) {
+                emit logMessage(QStringLiteral("[编码] %1 帧编码失败：%2")
+                                    .arg(device.id, errorMessage));
+                continue;
+            }
+        } else {
+            payload.append('\n');
+        }
+
         for (QTcpSocket *client : m_clients) {
             if (client->state() == QAbstractSocket::ConnectedState) {
                 client->write(payload);
@@ -213,7 +244,7 @@ const DeviceSimulatorServer::Device *DeviceSimulatorServer::findDevice(
     return nullptr;
 }
 
-QByteArray DeviceSimulatorServer::createPayload(const Device &device) const
+QByteArray DeviceSimulatorServer::createJsonPayload(const Device &device) const
 {
     const bool online = device.scenario != Scenario::Offline;
     QString status = QStringLiteral("normal");
@@ -249,9 +280,7 @@ QByteArray DeviceSimulatorServer::createPayload(const Device &device) const
     object.insert(QStringLiteral("voltage"),
                   std::round(device.voltage * 10.0) / 10.0);
 
-    QByteArray payload = QJsonDocument(object).toJson(QJsonDocument::Compact);
-    payload.append('\n');
-    return payload;
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 
 QString DeviceSimulatorServer::scenarioName(Scenario scenario) const
