@@ -99,7 +99,7 @@ AboutDialog::AboutDialog(QWidget *parent)
         "<li>可配置阈值告警与状态机</li>"
         "<li>可扩展的协议与设备驱动接口</li>"
         "</ul>");
-    m_tabs->addTab(createTextPage(aboutHtml, QStringLiteral("aboutOverview")), QStringLiteral("关于"));
+    m_tabs->addTab(createTextPage(aboutHtml, QStringLiteral("aboutOverview")), QStringLiteral("关于 Mu-Monitor"));
 
     const QString featuresHtml = QStringLiteral(
         "<h3>已规划功能</h3>"

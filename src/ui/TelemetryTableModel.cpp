@@ -51,12 +51,12 @@ QVariant TelemetryTableModel::data(const QModelIndex &index, int role) const
     if (role == Qt::ForegroundRole) {
         switch (record.status) {
         case TelemetryStatus::Online:
-            return QColor(QStringLiteral("#22c55e"));
+            return QColor(QStringLiteral("#2e7d32"));
         case TelemetryStatus::Alarm:
         case TelemetryStatus::Offline:
-            return QColor(QStringLiteral("#ef4444"));
+            return QColor(QStringLiteral("#b3261e"));
         case TelemetryStatus::Stopped:
-            return QColor(QStringLiteral("#94a3b8"));
+            return QColor(QStringLiteral("#5f6b7a"));
         }
     }
 
