@@ -1,24 +1,65 @@
 #include "app/MonitoringService.h"
 
+#include "alarm/AlarmEngine.h"
+#include "alarm/AlarmRule.h"
 #include "network/IDeviceDataSource.h"
 
-#include <QStringList>
+#include <chrono>
 
 namespace {
-constexpr double kHighTemperatureThreshold = 80.0;
-constexpr double kHighPressureThreshold = 1.8;
-
 double measurementValue(const TelemetrySample &sample, MeasurementType type)
 {
     const MeasurementValue *measurement = sample.measurement(type);
     return measurement ? measurement->value : 0.0;
 }
+
+void configureDefaultAlarmRules(AlarmEngine *engine)
+{
+    if (!engine) {
+        return;
+    }
+
+    AlarmRule temperature;
+    temperature.ruleId = QStringLiteral("temperature-high");
+    temperature.type = AlarmRuleType::HighThreshold;
+    temperature.measurement = MeasurementType::Temperature;
+    temperature.threshold = 80.0;
+    temperature.severity = AlarmSeverity::Warning;
+
+    AlarmRule pressure;
+    pressure.ruleId = QStringLiteral("pressure-high");
+    pressure.type = AlarmRuleType::HighThreshold;
+    pressure.measurement = MeasurementType::Pressure;
+    pressure.threshold = 1.8;
+    pressure.severity = AlarmSeverity::Warning;
+
+    AlarmRule offline;
+    offline.ruleId = QStringLiteral("device-offline");
+    offline.type = AlarmRuleType::Offline;
+    offline.offlineTimeout = std::chrono::seconds(5);
+    offline.severity = AlarmSeverity::Critical;
+
+    engine->setRules({temperature, pressure, offline});
+}
 }
 
 MonitoringService::MonitoringService(IDeviceDataSource *dataSource, QObject *parent)
+    : MonitoringService(dataSource, nullptr, parent)
+{
+}
+
+MonitoringService::MonitoringService(IDeviceDataSource *dataSource,
+                                     AlarmEngine *alarmEngine,
+                                     QObject *parent)
     : QObject(parent)
     , m_dataSource(dataSource)
 {
+    initializeAlarmEngine(alarmEngine);
+
+    m_offlineCheckTimer.setInterval(1000);
+    connect(&m_offlineCheckTimer, &QTimer::timeout,
+            this, [this]() { updateAlarmStates(); });
+
     if (!m_dataSource) {
         return;
     }
@@ -31,6 +72,30 @@ MonitoringService::MonitoringService(IDeviceDataSource *dataSource, QObject *par
             this, &MonitoringService::handleSourceConnectionState);
     connect(m_dataSource, &IDeviceDataSource::errorOccurred,
             this, &MonitoringService::handleSourceError);
+}
+
+void MonitoringService::initializeAlarmEngine(AlarmEngine *alarmEngine)
+{
+    m_alarmEngine = alarmEngine;
+    if (!m_alarmEngine) {
+        auto *ownedEngine = new AlarmEngine(this);
+        configureDefaultAlarmRules(ownedEngine);
+        m_alarmEngine = ownedEngine;
+    }
+
+    connect(m_alarmEngine, &AlarmEngine::alarmRaised,
+            this, [this](const AlarmEvent &event) {
+                emit alarmRaised(event);
+                emit alarmRaised(event.deviceId, event.message);
+            });
+    connect(m_alarmEngine, &AlarmEngine::alarmAcknowledged,
+            this, &MonitoringService::alarmAcknowledged);
+    connect(m_alarmEngine, &AlarmEngine::alarmCleared,
+            this, &MonitoringService::alarmCleared);
+    connect(m_alarmEngine, &AlarmEngine::alarmStateChanged,
+            this, &MonitoringService::alarmStateChanged);
+    connect(m_alarmEngine, &AlarmEngine::errorOccurred,
+            this, &MonitoringService::errorOccurred);
 }
 
 void MonitoringService::setDevices(const QList<DeviceInfo> &devices)
@@ -70,6 +135,7 @@ bool MonitoringService::start()
     if (m_dataSource->isRunning()) {
         setConnectionState(ConnectionState::Connected);
         setCollectionState(CollectionState::Running);
+        m_offlineCheckTimer.start();
         return true;
     }
 
@@ -84,11 +150,14 @@ bool MonitoringService::start()
         setConnectionState(ConnectionState::Connected);
     }
     setCollectionState(CollectionState::Running);
+    m_offlineCheckTimer.start();
     return true;
 }
 
 void MonitoringService::stop()
 {
+    m_offlineCheckTimer.stop();
+
     if (!m_dataSource) {
         setConnectionState(ConnectionState::Disconnected);
         setCollectionState(CollectionState::Stopped);
@@ -140,6 +209,25 @@ bool MonitoringService::setDeviceCollection(const QString &deviceId, bool enable
     return true;
 }
 
+AlarmEngine *MonitoringService::alarmEngine() const
+{
+    return m_alarmEngine;
+}
+
+bool MonitoringService::acknowledgeAlarm(const QString &eventId,
+                                         const QString &operatorId,
+                                         const QDateTime &at)
+{
+    return m_alarmEngine && m_alarmEngine->acknowledge(eventId, operatorId, at);
+}
+
+void MonitoringService::updateAlarmStates(const QDateTime &at)
+{
+    if (m_alarmEngine) {
+        m_alarmEngine->updateOfflineStates(at);
+    }
+}
+
 ConnectionState MonitoringService::connectionState() const
 {
     return m_connectionState;
@@ -184,14 +272,8 @@ void MonitoringService::processTelemetry(const QList<TelemetrySample> &samples)
             continue;
         }
 
-        bool isAlarm = false;
-        QString alarmMessage;
-        const TelemetryRecord record =
-            toTelemetryRecord(sample, &isAlarm, &alarmMessage);
-        records.append(record);
-        if (isAlarm) {
-            emit alarmRaised(record.deviceId, alarmMessage);
-        }
+        m_alarmEngine->processTelemetry(sample);
+        records.append(toTelemetryRecord(sample));
     }
 
     if (!records.isEmpty()) {
@@ -202,12 +284,16 @@ void MonitoringService::processTelemetry(const QList<TelemetrySample> &samples)
 void MonitoringService::processHeartbeats(const QList<HeartbeatRecord> &heartbeats)
 {
     for (const HeartbeatRecord &heartbeat : heartbeats) {
-        if (!heartbeat.deviceId.isEmpty()) {
-            m_online[heartbeat.deviceId] = heartbeat.online;
-            m_collecting[heartbeat.deviceId] = heartbeat.collecting;
-            emit deviceStateChanged(
-                heartbeat.deviceId, heartbeat.online, heartbeat.collecting);
+        if (heartbeat.deviceId.isEmpty()) {
+            continue;
         }
+
+        m_online[heartbeat.deviceId] = heartbeat.online;
+        m_collecting[heartbeat.deviceId] = heartbeat.collecting;
+        m_alarmEngine->processHeartbeat(
+            heartbeat.deviceId, heartbeat.online, heartbeat.heartbeatAt);
+        emit deviceStateChanged(
+            heartbeat.deviceId, heartbeat.online, heartbeat.collecting);
     }
 
     if (!heartbeats.isEmpty()) {
@@ -245,9 +331,7 @@ void MonitoringService::setCollectionState(CollectionState state)
     emit collectionStateChanged(state);
 }
 
-TelemetryRecord MonitoringService::toTelemetryRecord(const TelemetrySample &sample,
-                                                    bool *isAlarm,
-                                                    QString *alarmMessage) const
+TelemetryRecord MonitoringService::toTelemetryRecord(const TelemetrySample &sample) const
 {
     const bool online = m_online.value(sample.deviceId, true);
     const bool collecting = m_collecting.value(sample.deviceId, true);
@@ -264,24 +348,23 @@ TelemetryRecord MonitoringService::toTelemetryRecord(const TelemetrySample &samp
         ? TelemetryStatus::Offline
         : (collecting ? TelemetryStatus::Online : TelemetryStatus::Stopped);
 
-    QStringList alarms;
-    if (online && collecting && record.temperature > kHighTemperatureThreshold) {
-        alarms << QStringLiteral("温度超过阈值 %1 °C")
-                      .arg(kHighTemperatureThreshold, 0, 'f', 1);
-    }
-    if (online && collecting && record.pressure > kHighPressureThreshold) {
-        alarms << QStringLiteral("压力超过阈值 %1 MPa")
-                      .arg(kHighPressureThreshold, 0, 'f', 2);
-    }
-
-    if (!alarms.isEmpty()) {
+    if (deviceHasActiveAlarm(sample.deviceId)) {
         record.status = TelemetryStatus::Alarm;
-        if (alarmMessage) {
-            *alarmMessage = alarms.join(QStringLiteral("；"));
-        }
-    }
-    if (isAlarm) {
-        *isAlarm = !alarms.isEmpty();
     }
     return record;
+}
+
+bool MonitoringService::deviceHasActiveAlarm(const QString &deviceId) const
+{
+    if (!m_alarmEngine) {
+        return false;
+    }
+
+    const QList<AlarmEvent> events = m_alarmEngine->activeEvents();
+    for (const AlarmEvent &event : events) {
+        if (event.deviceId == deviceId) {
+            return true;
+        }
+    }
+    return false;
 }

@@ -188,6 +188,7 @@ target_link_libraries(Mu-Monitor
         Qt::Sql
         mu_network
         mu_auth
+        mu_alarm
         QXlsx::QXlsx
 )
 

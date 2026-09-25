@@ -215,6 +215,7 @@ target_link_libraries(MainWindowResponsiveTest PRIVATE
     Qt::Widgets
     Qt::Sql
     mu_auth
+    mu_alarm
     Qt::Test
     QXlsx::QXlsx
 )
@@ -268,6 +269,7 @@ target_link_libraries(ApplicationLayerTest PRIVATE
     Qt::Core
     Qt::Sql
     Qt::Test
+    mu_alarm
 )
 set_tests_properties(ApplicationLayerTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

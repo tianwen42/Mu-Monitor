@@ -1,3 +1,5 @@
+#include "alarm/AlarmEngine.h"
+#include "alarm/AlarmRule.h"
 #include "app/AppController.h"
 #include "app/MonitoringService.h"
 #include "database/DatabaseManager.h"
@@ -29,6 +31,8 @@ QFuture<T> readyFuture(T result)
 }
 
 } // namespace
+
+#include <chrono>
 
 class FakeDataSource : public IDeviceDataSource
 {
@@ -76,6 +80,11 @@ public:
     void emitTelemetry(const QList<TelemetrySample> &samples)
     {
         emit telemetryGenerated(samples);
+    }
+
+    void emitHeartbeat(const QList<HeartbeatRecord> &heartbeats)
+    {
+        emit heartbeatGenerated(heartbeats);
     }
 
 private:
@@ -235,13 +244,19 @@ DeviceInfo makeDevice(const QString &id)
     return device;
 }
 
-TelemetrySample highTemperatureSample()
+QDateTime utc(const QString &value)
+{
+    return QDateTime::fromString(value, Qt::ISODate).toUTC();
+}
+
+TelemetrySample temperatureSample(const QString &deviceId, double value,
+                                  const QDateTime &at)
 {
     TelemetrySample sample;
-    sample.deviceId = QStringLiteral("DEV-001");
-    sample.collectedAt = QDateTime::currentDateTimeUtc();
+    sample.deviceId = deviceId;
+    sample.collectedAt = at.toUTC();
     sample.measurements = {
-        {MeasurementType::Temperature, 86.5, QualityCode::Good},
+        {MeasurementType::Temperature, value, QualityCode::Good},
         {MeasurementType::Pressure, 1.2, QualityCode::Good},
         {MeasurementType::Speed, 1500.0, QualityCode::Good},
         {MeasurementType::Voltage, 220.0, QualityCode::Good},
@@ -261,7 +276,26 @@ TelemetryRecord telemetryRecord(const QString &deviceId)
     record.voltage = 220.0;
     record.updatedAt = QDateTime::currentDateTimeUtc();
     return record;
+AlarmRule highTemperatureRule(double threshold)
+{
+    AlarmRule rule;
+    rule.ruleId = QStringLiteral("temperature-high");
+    rule.type = AlarmRuleType::HighThreshold;
+    rule.measurement = MeasurementType::Temperature;
+    rule.threshold = threshold;
+    rule.severity = AlarmSeverity::Warning;
+    return rule;
 }
+
+AlarmRule offlineRule(std::chrono::milliseconds timeout)
+{
+    AlarmRule rule;
+    rule.ruleId = QStringLiteral("device-offline");
+    rule.type = AlarmRuleType::Offline;
+    rule.offlineTimeout = timeout;
+    rule.severity = AlarmSeverity::Critical;
+    return rule;
+}}
 } // namespace
 
 class ApplicationLayerTest : public QObject
@@ -271,7 +305,8 @@ class ApplicationLayerTest : public QObject
 private slots:
     void initTestCase();
     void cleanupTestCase();
-    void monitoringServiceForwardsAndMarksAlarm();
+    void monitoringServiceDrivesAlarmLifecycle();
+    void monitoringServiceDrivesOfflineAlarmRecovery();
     void appControllerForwardsCommands();
     void controllerDestructorStopsSource();
     void controllerSubmitsPersistenceAsynchronously();
@@ -302,31 +337,125 @@ void ApplicationLayerTest::cleanupTestCase()
     DatabaseManager::instance().shutdown();
 }
 
-void ApplicationLayerTest::monitoringServiceForwardsAndMarksAlarm()
+void ApplicationLayerTest::monitoringServiceDrivesAlarmLifecycle()
 {
+    QDateTime now = utc(QStringLiteral("2026-09-25T10:00:00Z"));
+    AlarmEngine alarmEngine;
+    alarmEngine.setClock([&now]() { return now; });
+    QVERIFY(alarmEngine.addRule(highTemperatureRule(80.0)));
+
     FakeDataSource source;
-    MonitoringService service(&source);
+    MonitoringService service(&source, &alarmEngine);
     service.setDevices({makeDevice(QStringLiteral("DEV-001"))});
 
-    QList<TelemetryRecord> receivedRecords;
-    QString alarmDeviceId;
+    QList<TelemetryRecord> records;
+    QList<AlarmEvent> raised;
+    QList<AlarmEvent> acknowledged;
+    QList<AlarmEvent> cleared;
+    QList<QPair<AlarmState, AlarmState>> transitions;
     connect(&service, &MonitoringService::telemetryBatchReceived,
-            this, [&receivedRecords](const QList<TelemetryRecord> &records) {
-                receivedRecords = records;
+            this, [&records](const QList<TelemetryRecord> &value) {
+                records.append(value);
             });
-    connect(&service, &MonitoringService::alarmRaised,
-            this, [&alarmDeviceId](const QString &deviceId, const QString &) {
-                alarmDeviceId = deviceId;
+    connect(&service,
+            QOverload<const AlarmEvent &>::of(&MonitoringService::alarmRaised),
+            this, [&raised](const AlarmEvent &event) { raised.append(event); });
+    connect(&service, &MonitoringService::alarmAcknowledged,
+            this, [&acknowledged](const AlarmEvent &event) {
+                acknowledged.append(event);
+            });
+    connect(&service, &MonitoringService::alarmCleared,
+            this, [&cleared](const AlarmEvent &event) { cleared.append(event); });
+    connect(&service, &MonitoringService::alarmStateChanged,
+            this, [&transitions](const AlarmEvent &, AlarmState previous,
+                                 AlarmState current) {
+                transitions.append({previous, current});
             });
 
     QVERIFY(service.start());
     QCOMPARE(service.connectionState(), ConnectionState::Connected);
-    source.emitTelemetry({highTemperatureSample()});
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 86.5, now)});
 
-    QCOMPARE(receivedRecords.size(), 1);
-    QCOMPARE(receivedRecords.first().status, TelemetryStatus::Alarm);
-    QCOMPARE(receivedRecords.first().deviceId, QStringLiteral("DEV-001"));
-    QCOMPARE(alarmDeviceId, QStringLiteral("DEV-001"));
+    QCOMPARE(records.size(), 1);
+    QCOMPARE(records.first().status, TelemetryStatus::Alarm);
+    QCOMPARE(records.first().deviceId, QStringLiteral("DEV-001"));
+    QCOMPARE(raised.size(), 1);
+    QCOMPARE(raised.first().deviceId, QStringLiteral("DEV-001"));
+    QCOMPARE(raised.first().state, AlarmState::Active);
+
+    now = now.addSecs(1);
+    QVERIFY(service.acknowledgeAlarm(
+        raised.first().eventId, QStringLiteral("operator"), now));
+    QCOMPARE(acknowledged.size(), 1);
+    QCOMPARE(acknowledged.first().state, AlarmState::Acknowledged);
+    QCOMPARE(acknowledged.first().acknowledgedBy, QStringLiteral("operator"));
+
+    now = now.addSecs(1);
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 70.0, now)});
+
+    QCOMPARE(records.size(), 2);
+    QCOMPARE(records.last().status, TelemetryStatus::Online);
+    QCOMPARE(cleared.size(), 1);
+    QCOMPARE(cleared.first().state, AlarmState::Cleared);
+    QCOMPARE(transitions.size(), 4);
+    QCOMPARE(transitions.at(0).first, AlarmState::Normal);
+    QCOMPARE(transitions.at(0).second, AlarmState::Active);
+    QCOMPARE(transitions.at(1).first, AlarmState::Active);
+    QCOMPARE(transitions.at(1).second, AlarmState::Acknowledged);
+    QCOMPARE(transitions.at(2).first, AlarmState::Acknowledged);
+    QCOMPARE(transitions.at(2).second, AlarmState::Cleared);
+    QCOMPARE(transitions.at(3).first, AlarmState::Cleared);
+    QCOMPARE(transitions.at(3).second, AlarmState::Normal);
+}
+
+void ApplicationLayerTest::monitoringServiceDrivesOfflineAlarmRecovery()
+{
+    QDateTime now = utc(QStringLiteral("2026-09-25T11:00:00Z"));
+    AlarmEngine alarmEngine;
+    alarmEngine.setClock([&now]() { return now; });
+    QVERIFY(alarmEngine.addRule(offlineRule(std::chrono::milliseconds{3000})));
+
+    FakeDataSource source;
+    MonitoringService service(&source, &alarmEngine);
+    service.setDevices({makeDevice(QStringLiteral("DEV-001"))});
+
+    QList<AlarmEvent> raised;
+    QList<AlarmEvent> cleared;
+    connect(&service,
+            QOverload<const AlarmEvent &>::of(&MonitoringService::alarmRaised),
+            this, [&raised](const AlarmEvent &event) { raised.append(event); });
+    connect(&service, &MonitoringService::alarmCleared,
+            this, [&cleared](const AlarmEvent &event) { cleared.append(event); });
+
+    QVERIFY(service.start());
+
+    HeartbeatRecord heartbeat;
+    heartbeat.deviceId = QStringLiteral("DEV-001");
+    heartbeat.heartbeatAt = now;
+    heartbeat.online = true;
+    heartbeat.collecting = true;
+    source.emitHeartbeat({heartbeat});
+
+    now = now.addMSecs(2999);
+    service.updateAlarmStates(now);
+    QCOMPARE(raised.size(), 0);
+
+    now = now.addMSecs(1);
+    service.updateAlarmStates(now);
+    QCOMPARE(raised.size(), 1);
+    QCOMPARE(raised.first().ruleId, QStringLiteral("device-offline"));
+    QCOMPARE(raised.first().state, AlarmState::Active);
+
+    now = now.addSecs(1);
+    heartbeat.heartbeatAt = now;
+    source.emitHeartbeat({heartbeat});
+
+    QCOMPARE(cleared.size(), 1);
+    QCOMPARE(cleared.first().ruleId, QStringLiteral("device-offline"));
+    QCOMPARE(cleared.first().state, AlarmState::Cleared);
+    QVERIFY(service.isDeviceOnline(QStringLiteral("DEV-001")));
 }
 
 void ApplicationLayerTest::appControllerForwardsCommands()
