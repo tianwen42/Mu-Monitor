@@ -194,6 +194,10 @@ void MainWindowResponsiveTest::deviceToolsAndLogControlsAreUsable()
     QCOMPARE(clearRecoveredAction->text(), QStringLiteral("清理已恢复"));
     QVERIFY(deviceDockAction);
     QVERIFY(deviceDock);
+    QVERIFY(!deviceDock->features().testFlag(QDockWidget::DockWidgetMovable));
+    QVERIFY(!deviceDock->features().testFlag(QDockWidget::DockWidgetFloatable));
+    QVERIFY(!deviceDock->features().testFlag(QDockWidget::DockWidgetClosable));
+    QCOMPARE(deviceDock->allowedAreas(), Qt::LeftDockWidgetArea);
 
     auto visibleDeviceCount = [deviceList]() {
         int count = 0;

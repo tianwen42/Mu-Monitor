@@ -29,8 +29,10 @@ public:
 
     virtual bool setCollectionEnabled(bool enabled) = 0;
     virtual bool setDeviceCollectionEnabled(const QString &deviceId, bool enabled) = 0;
+    virtual bool discoversDevicesDynamically() const { return false; }
 
 signals:
+    void deviceDiscovered(const DeviceInfo &device);
     void telemetryGenerated(const QList<TelemetrySample> &samples);
     void heartbeatGenerated(const QList<HeartbeatRecord> &heartbeats);
     void connectionStateChanged(ConnectionState state);

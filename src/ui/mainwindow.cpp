@@ -416,10 +416,8 @@ void MainWindow::setupDocks()
 
     m_deviceDock = new QDockWidget(QStringLiteral("设备列表"), this);
     m_deviceDock->setObjectName(QStringLiteral("deviceDock"));
-    m_deviceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    m_deviceDock->setFeatures(QDockWidget::DockWidgetMovable
-                              | QDockWidget::DockWidgetFloatable
-                              | QDockWidget::DockWidgetClosable);
+    m_deviceDock->setAllowedAreas(Qt::LeftDockWidgetArea);
+    m_deviceDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
     ui->devicePanel->setParent(nullptr);
     m_deviceDock->setWidget(ui->devicePanel);
     addDockWidget(Qt::LeftDockWidgetArea, m_deviceDock);

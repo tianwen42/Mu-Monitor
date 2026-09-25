@@ -24,6 +24,7 @@ public:
                       QObject *parent = nullptr);
 
     void setDevices(const QList<DeviceInfo> &devices);
+    void registerDevice(const DeviceInfo &device);
     QList<DeviceInfo> devices() const;
 
     bool start();
