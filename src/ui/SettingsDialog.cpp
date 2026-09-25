@@ -1,6 +1,7 @@
 #include "ui/SettingsDialog.h"
 
 #include "auth/AuthTypes.h"
+#include "config/DataSourceConfig.h"
 #include "database/DatabaseManager.h"
 #include "database/UserRepository.h"
 #include "ui/UserManagementDialog.h"
@@ -25,6 +26,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -41,17 +43,18 @@ SettingsDialog::SettingsDialog(QWidget *parent)
 
     connect(m_categoryList, &QListWidget::currentRowChanged,
             m_pageStack, &QStackedWidget::setCurrentIndex);
-    connect(m_buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(m_buttonBox, &QDialogButtonBox::accepted, this, [this]() {
+        if (saveDataSourceSettings()) {
+            accept();
+        }
+    });
     connect(m_buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked,
             this, [this]() {
-                m_statusLabel->setText(QStringLiteral("设置已应用到当前会话"));
+                saveDataSourceSettings();
             });
-
-    if (QPushButton *applyButton = m_buttonBox->button(QDialogButtonBox::Apply)) {
-        applyButton->setEnabled(false);
-    }
-    m_statusLabel->setText(QStringLiteral("数据导出页已可用；其他设置将在后续阶段接入。"));
+    m_statusLabel->setText(
+        QStringLiteral("数据源配置可在“连接”页面修改，其他设置将在后续阶段接入。"));
 
     m_categoryList->setCurrentRow(0);
 }
@@ -135,31 +138,100 @@ void SettingsDialog::setupPages()
 
     QWidget *connectionPage = createFormPage();
     auto *connectionForm = qobject_cast<QFormLayout *>(connectionPage->layout());
-    auto *protocolCombo = new QComboBox;
-    protocolCombo->addItems({QStringLiteral("TCP 自定义协议"), QStringLiteral("Modbus TCP"), QStringLiteral("MQTT")});
-    auto *hostEdit = new QLineEdit(QStringLiteral("127.0.0.1"));
-    auto *portSpin = new QSpinBox;
-    portSpin->setRange(1, 65535);
-    portSpin->setValue(1234);
-    auto *timeoutSpin = new QSpinBox;
-    timeoutSpin->setRange(1000, 60000);
-    timeoutSpin->setValue(5000);
-    timeoutSpin->setSuffix(QStringLiteral(" ms"));
-    auto *retrySpin = new QSpinBox;
-    retrySpin->setRange(1, 60);
-    retrySpin->setValue(5);
-    retrySpin->setSuffix(QStringLiteral(" s"));
-    auto *testButton = new QPushButton(QStringLiteral("测试连接"));
-    connect(testButton, &QPushButton::clicked, this, [this]() {
-        m_statusLabel->setText(QStringLiteral("连接测试将在 TCP 阶段实现"));
+    const ApplicationConfig currentConfig = ApplicationConfig::fromSettings(QSettings());
+    const DataSourceConfig &currentDataSource = currentConfig.dataSource;
+
+    m_dataSourceTypeCombo = new QComboBox;
+    m_dataSourceTypeCombo->setObjectName(QStringLiteral("dataSourceTypeCombo"));
+    m_dataSourceTypeCombo->addItem(QStringLiteral("内置模拟数据"),
+                                   QStringLiteral("simulation"));
+    m_dataSourceTypeCombo->addItem(QStringLiteral("TCP 设备"),
+                                   QStringLiteral("tcp"));
+    m_dataSourceTypeCombo->setCurrentIndex(
+        currentDataSource.type == DataSourceType::Tcp ? 1 : 0);
+
+    m_hostEdit = new QLineEdit(currentDataSource.host);
+    m_hostEdit->setObjectName(QStringLiteral("dataSourceHostEdit"));
+    m_hostEdit->setPlaceholderText(QStringLiteral("127.0.0.1"));
+
+    m_portSpin = new QSpinBox;
+    m_portSpin->setObjectName(QStringLiteral("dataSourcePortSpin"));
+    m_portSpin->setRange(1, 65535);
+    m_portSpin->setValue(currentDataSource.port);
+
+    m_samplingIntervalSpin = new QSpinBox;
+    m_samplingIntervalSpin->setObjectName(QStringLiteral("samplingIntervalSpin"));
+    m_samplingIntervalSpin->setRange(100, 60000);
+    m_samplingIntervalSpin->setValue(currentDataSource.samplingIntervalMs);
+    m_samplingIntervalSpin->setSuffix(QStringLiteral(" ms"));
+
+    m_heartbeatIntervalSpin = new QSpinBox;
+    m_heartbeatIntervalSpin->setObjectName(QStringLiteral("heartbeatIntervalSpin"));
+    m_heartbeatIntervalSpin->setRange(100, 60000);
+    m_heartbeatIntervalSpin->setValue(currentDataSource.heartbeatIntervalMs);
+    m_heartbeatIntervalSpin->setSuffix(QStringLiteral(" ms"));
+
+    m_reconnectCheck = new QCheckBox(QStringLiteral("连接断开后自动重连"));
+    m_reconnectCheck->setObjectName(QStringLiteral("reconnectEnabledCheck"));
+    m_reconnectCheck->setChecked(currentDataSource.reconnectEnabled);
+
+    m_reconnectDelaySpin = new QSpinBox;
+    m_reconnectDelaySpin->setObjectName(QStringLiteral("reconnectDelaySpin"));
+    m_reconnectDelaySpin->setRange(100, 60000);
+    m_reconnectDelaySpin->setValue(currentDataSource.reconnectDelayMs);
+    m_reconnectDelaySpin->setSuffix(QStringLiteral(" ms"));
+
+    m_maxReconnectDelaySpin = new QSpinBox;
+    m_maxReconnectDelaySpin->setObjectName(QStringLiteral("maxReconnectDelaySpin"));
+    m_maxReconnectDelaySpin->setRange(100, 300000);
+    m_maxReconnectDelaySpin->setValue(currentDataSource.reconnectMaxDelayMs);
+    m_maxReconnectDelaySpin->setSuffix(QStringLiteral(" ms"));
+
+    m_connectTimeoutSpin = new QSpinBox;
+    m_connectTimeoutSpin->setObjectName(QStringLiteral("connectTimeoutSpin"));
+    m_connectTimeoutSpin->setRange(1000, 120000);
+    m_connectTimeoutSpin->setValue(currentDataSource.connectTimeoutMs);
+    m_connectTimeoutSpin->setSuffix(QStringLiteral(" ms"));
+
+    m_readTimeoutSpin = new QSpinBox;
+    m_readTimeoutSpin->setObjectName(QStringLiteral("readTimeoutSpin"));
+    m_readTimeoutSpin->setRange(1000, 300000);
+    m_readTimeoutSpin->setValue(currentDataSource.readTimeoutMs);
+    m_readTimeoutSpin->setSuffix(QStringLiteral(" ms"));
+
+    auto *checkConfigButton = new QPushButton(QStringLiteral("检查配置"));
+    connect(checkConfigButton, &QPushButton::clicked, this, [this]() {
+        if (m_dataSourceTypeCombo->currentData().toString()
+            == QStringLiteral("simulation")) {
+            m_statusLabel->setText(QStringLiteral("内置模拟数据源配置有效。"));
+            return;
+        }
+        if (m_hostEdit->text().trimmed().isEmpty()) {
+            QMessageBox::warning(
+                this, QStringLiteral("配置错误"),
+                QStringLiteral("TCP 主机地址不能为空。"));
+            return;
+        }
+        m_statusLabel->setText(
+            QStringLiteral("TCP 配置格式有效。连接状态将在主界面显示。"));
     });
-    connectionForm->addRow(QStringLiteral("通信协议"), protocolCombo);
-    connectionForm->addRow(QStringLiteral("设备地址"), hostEdit);
-    connectionForm->addRow(QStringLiteral("设备端口"), portSpin);
-    connectionForm->addRow(QStringLiteral("连接超时"), timeoutSpin);
-    connectionForm->addRow(QStringLiteral("重连间隔"), retrySpin);
-    connectionForm->addRow(QString(), testButton);
-    disableUntilImplemented({protocolCombo, hostEdit, portSpin, timeoutSpin, retrySpin, testButton});
+
+    connectionForm->addRow(QStringLiteral("数据源类型"), m_dataSourceTypeCombo);
+    connectionForm->addRow(QStringLiteral("TCP 主机"), m_hostEdit);
+    connectionForm->addRow(QStringLiteral("TCP 端口"), m_portSpin);
+    connectionForm->addRow(QStringLiteral("采样周期"), m_samplingIntervalSpin);
+    connectionForm->addRow(QStringLiteral("心跳周期"), m_heartbeatIntervalSpin);
+    connectionForm->addRow(QString(), m_reconnectCheck);
+    connectionForm->addRow(QStringLiteral("重连初始延迟"), m_reconnectDelaySpin);
+    connectionForm->addRow(QStringLiteral("重连最大延迟"), m_maxReconnectDelaySpin);
+    connectionForm->addRow(QStringLiteral("连接超时"), m_connectTimeoutSpin);
+    connectionForm->addRow(QStringLiteral("读取超时"), m_readTimeoutSpin);
+    connectionForm->addRow(QString(), checkConfigButton);
+
+    connect(m_dataSourceTypeCombo, &QComboBox::currentIndexChanged,
+            this, [this]() { updateDataSourceControls(); });
+    updateDataSourceControls();
+
     addPage(QStringLiteral("连接"), appStyle->standardIcon(QStyle::SP_DriveNetIcon), connectionPage);
 
     QWidget *storagePage = createFormPage();
@@ -438,4 +510,54 @@ void SettingsDialog::setupPages()
     aboutLayout->addWidget(aboutLabel);
     aboutLayout->addStretch();
     addPage(QStringLiteral("关于"), appStyle->standardIcon(QStyle::SP_MessageBoxInformation), aboutPage);
+}
+bool SettingsDialog::saveDataSourceSettings()
+{
+    QSettings settings;
+    ApplicationConfig config = ApplicationConfig::fromSettings(settings);
+    DataSourceConfig &dataSource = config.dataSource;
+
+    const bool tcpSelected =
+        m_dataSourceTypeCombo->currentData().toString() == QStringLiteral("tcp");
+    dataSource.type = tcpSelected ? DataSourceType::Tcp
+                                  : DataSourceType::Simulation;
+    dataSource.host = m_hostEdit->text().trimmed();
+    dataSource.port = static_cast<quint16>(m_portSpin->value());
+    dataSource.samplingIntervalMs = m_samplingIntervalSpin->value();
+    dataSource.heartbeatIntervalMs = m_heartbeatIntervalSpin->value();
+    dataSource.reconnectEnabled = m_reconnectCheck->isChecked();
+    dataSource.reconnectDelayMs = m_reconnectDelaySpin->value();
+    dataSource.reconnectMaxDelayMs = m_maxReconnectDelaySpin->value();
+    dataSource.connectTimeoutMs = m_connectTimeoutSpin->value();
+    dataSource.readTimeoutMs = m_readTimeoutSpin->value();
+
+    QString errorMessage;
+    if (!dataSource.isValid(&errorMessage)) {
+        QMessageBox::warning(this, QStringLiteral("数据源配置错误"), errorMessage);
+        return false;
+    }
+
+    config.save(settings);
+    settings.sync();
+    m_statusLabel->setText(
+        QStringLiteral("数据源配置已保存，重启 Mu-Monitor 后生效。"));
+    return true;
+}
+
+void SettingsDialog::updateDataSourceControls()
+{
+    const bool tcpSelected =
+        m_dataSourceTypeCombo->currentData().toString() == QStringLiteral("tcp");
+    const bool reconnectEnabled = tcpSelected && m_reconnectCheck->isChecked();
+
+    m_hostEdit->setEnabled(tcpSelected);
+    m_portSpin->setEnabled(tcpSelected);
+    m_connectTimeoutSpin->setEnabled(tcpSelected);
+    m_readTimeoutSpin->setEnabled(tcpSelected);
+    m_reconnectCheck->setEnabled(tcpSelected);
+    m_reconnectDelaySpin->setEnabled(reconnectEnabled);
+    m_maxReconnectDelaySpin->setEnabled(reconnectEnabled);
+
+    m_samplingIntervalSpin->setEnabled(true);
+    m_heartbeatIntervalSpin->setEnabled(true);
 }

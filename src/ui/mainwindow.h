@@ -71,6 +71,7 @@ private:
     void setupHistoryPage();
     void rebuildHistoryDeviceCombo();
     bool isDeviceOnline(int index) const;
+    void showStatusMessage(const QString &message, int timeout = 0);
     void updateKpi();
     void startDeviceCollection(int index);
     void stopDeviceCollection(int index);
@@ -87,6 +88,7 @@ private:
     Ui::MainWindow *ui = nullptr;
     AppController *m_controller = nullptr;
     TelemetryTableModel *m_model = nullptr;
+    QLabel *m_userStatusLabel = nullptr;
     QLabel *m_overviewDeviceNameLabel = nullptr;
     QLabel *m_overviewDeviceStateLabel = nullptr;
     QLabel *m_overviewDeviceMetaLabel = nullptr;

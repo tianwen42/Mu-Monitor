@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "config/DataSourceConfig.h"
 #include "database/DatabaseManager.h"
 #include "database/SqliteTelemetryRepository.h"
 #include "network/SimulationDataSource.h"
@@ -13,6 +14,9 @@
 #include "ui/mainwindow.h"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QBoxLayout>
@@ -23,6 +27,8 @@
 #include <QPushButton>
 #include <QPixmap>
 #include <QPointer>
+#include <QSettings>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
@@ -40,6 +46,7 @@ private slots:
     void stopsDevicesIndependently();
     void destroyingWindowStopsController();
     void settingsDialogShowsUserManagementPermissionsAndDatabasePath();
+    void settingsDialogPersistsDataSourceConfiguration();
 
 private:
     std::unique_ptr<QTemporaryDir> m_tempDirectory;
@@ -92,6 +99,10 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
     QTest::qWait(50);
     QCOMPARE(window.size(), QSize(1600, 900));
 
+    auto *appTitle = window.findChild<QWidget *>(QStringLiteral("appTitle"));
+    QVERIFY(appTitle);
+    QVERIFY(!appTitle->isVisible());
+
     auto *kpiGrid = window.findChild<QGridLayout *>(QStringLiteral("kpiLayout"));
     auto *trendPlaceholder = window.findChild<QWidget *>(QStringLiteral("trendChartPlaceholder"));
     auto *alarmPanel = window.findChild<QWidget *>(QStringLiteral("overviewAlarmPanel"));
@@ -116,7 +127,7 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
 
     auto *lowerLayout = window.findChild<QBoxLayout *>(QStringLiteral("overviewLowerLayout"));
     QVERIFY(lowerLayout);
-    QCOMPARE(lowerLayout->direction(), QBoxLayout::LeftToRight);
+    QCOMPARE(lowerLayout->direction(), QBoxLayout::TopToBottom);
     QVERIFY(trendPlaceholder->width() > 0);
     QVERIFY(alarmPanel->width() > 0);
 
@@ -263,6 +274,66 @@ void MainWindowResponsiveTest::settingsDialogShowsUserManagementPermissionsAndDa
     QVERIFY(viewerPasswordButton->isEnabled());
 
     qApp->setProperty(Auth::CurrentUserProperty, QStringLiteral("admin"));
+}
+
+void MainWindowResponsiveTest::settingsDialogPersistsDataSourceConfiguration()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("dataSource"));
+    settings.sync();
+
+    SettingsDialog dialog;
+    auto *typeCombo = dialog.findChild<QComboBox *>(QStringLiteral("dataSourceTypeCombo"));
+    auto *hostEdit = dialog.findChild<QLineEdit *>(QStringLiteral("dataSourceHostEdit"));
+    auto *portSpin = dialog.findChild<QSpinBox *>(QStringLiteral("dataSourcePortSpin"));
+    auto *samplingSpin = dialog.findChild<QSpinBox *>(QStringLiteral("samplingIntervalSpin"));
+    auto *heartbeatSpin = dialog.findChild<QSpinBox *>(QStringLiteral("heartbeatIntervalSpin"));
+    auto *reconnectCheck = dialog.findChild<QCheckBox *>(QStringLiteral("reconnectEnabledCheck"));
+    auto *reconnectDelaySpin = dialog.findChild<QSpinBox *>(QStringLiteral("reconnectDelaySpin"));
+    auto *maxReconnectDelaySpin = dialog.findChild<QSpinBox *>(QStringLiteral("maxReconnectDelaySpin"));
+    auto *connectTimeoutSpin = dialog.findChild<QSpinBox *>(QStringLiteral("connectTimeoutSpin"));
+    auto *readTimeoutSpin = dialog.findChild<QSpinBox *>(QStringLiteral("readTimeoutSpin"));
+    auto *buttons = dialog.findChild<QDialogButtonBox *>();
+
+    QVERIFY(typeCombo);
+    QVERIFY(hostEdit);
+    QVERIFY(portSpin);
+    QVERIFY(samplingSpin);
+    QVERIFY(heartbeatSpin);
+    QVERIFY(reconnectCheck);
+    QVERIFY(reconnectDelaySpin);
+    QVERIFY(maxReconnectDelaySpin);
+    QVERIFY(connectTimeoutSpin);
+    QVERIFY(readTimeoutSpin);
+    QVERIFY(buttons);
+
+    typeCombo->setCurrentIndex(typeCombo->findData(QStringLiteral("tcp")));
+    hostEdit->setText(QStringLiteral("10.0.0.25"));
+    portSpin->setValue(45454);
+    samplingSpin->setValue(2000);
+    heartbeatSpin->setValue(4000);
+    reconnectCheck->setChecked(true);
+    reconnectDelaySpin->setValue(1500);
+    maxReconnectDelaySpin->setValue(12000);
+    connectTimeoutSpin->setValue(6000);
+    readTimeoutSpin->setValue(20000);
+
+    QPushButton *applyButton = buttons->button(QDialogButtonBox::Apply);
+    QVERIFY(applyButton);
+    applyButton->click();
+    QCoreApplication::processEvents();
+
+    const ApplicationConfig config = ApplicationConfig::fromSettings(QSettings());
+    QCOMPARE(int(config.dataSource.type), int(DataSourceType::Tcp));
+    QCOMPARE(config.dataSource.host, QStringLiteral("10.0.0.25"));
+    QCOMPARE(config.dataSource.port, quint16(45454));
+    QCOMPARE(config.dataSource.samplingIntervalMs, 2000);
+    QCOMPARE(config.dataSource.heartbeatIntervalMs, 4000);
+    QVERIFY(config.dataSource.reconnectEnabled);
+    QCOMPARE(config.dataSource.reconnectDelayMs, 1500);
+    QCOMPARE(config.dataSource.reconnectMaxDelayMs, 12000);
+    QCOMPARE(config.dataSource.connectTimeoutMs, 6000);
+    QCOMPARE(config.dataSource.readTimeoutMs, 20000);
 }
 QTEST_MAIN(MainWindowResponsiveTest)
 
