@@ -3,6 +3,7 @@
 #include "utils/TimeUtils.h"
 
 #include <QColor>
+#include <QSet>
 
 TelemetryTableModel::TelemetryTableModel(QObject *parent)
     : QAbstractTableModel(parent)
@@ -94,6 +95,23 @@ void TelemetryTableModel::upsertRecord(const TelemetryRecord &record)
     beginInsertRows(QModelIndex(), m_records.size(), m_records.size());
     m_records.append(record);
     endInsertRows();
+}
+
+void TelemetryTableModel::retainDevices(const QList<QString> &deviceIds)
+{
+    QSet<QString> keep;
+    for (const QString &deviceId : deviceIds) {
+        keep.insert(deviceId);
+    }
+
+    for (int row = m_records.size() - 1; row >= 0; --row) {
+        if (keep.contains(m_records.at(row).deviceId)) {
+            continue;
+        }
+        beginRemoveRows(QModelIndex(), row, row);
+        m_records.removeAt(row);
+        endRemoveRows();
+    }
 }
 
 bool TelemetryTableModel::recordForDevice(const QString &deviceId, TelemetryRecord *record) const
