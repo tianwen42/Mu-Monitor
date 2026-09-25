@@ -14,6 +14,7 @@ private slots:
     void exposesFormattedColumns();
     void reportsStatusColors();
     void looksUpRecordByDeviceId();
+    void retainsOnlyCurrentDevices();
 };
 
 namespace {
@@ -69,6 +70,22 @@ void TelemetryTableModelTest::exposesFormattedColumns()
     QVERIFY(!model.index(5, 0).isValid());
 }
 
+void TelemetryTableModelTest::retainsOnlyCurrentDevices()
+{
+    TelemetryTableModel model;
+    model.upsertRecord(makeRecord(QStringLiteral("DEV-001"), 61.0));
+    model.upsertRecord(makeRecord(QStringLiteral("DEV-002"), 62.0));
+    model.upsertRecord(makeRecord(QStringLiteral("DEV-005"), 65.0));
+
+    model.retainDevices({QStringLiteral("DEV-001"), QStringLiteral("DEV-002")});
+    QCOMPARE(model.recordCount(), 2);
+    QVERIFY(model.recordForDevice(QStringLiteral("DEV-001"), nullptr));
+    QVERIFY(model.recordForDevice(QStringLiteral("DEV-002"), nullptr));
+    QVERIFY(!model.recordForDevice(QStringLiteral("DEV-005"), nullptr));
+
+    model.retainDevices({});
+    QCOMPARE(model.recordCount(), 0);
+}
 void TelemetryTableModelTest::looksUpRecordByDeviceId()
 {
     TelemetryTableModel model;

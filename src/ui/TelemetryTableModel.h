@@ -32,6 +32,7 @@ public:
                         int role = Qt::DisplayRole) const override;
 
     void upsertRecord(const TelemetryRecord &record);
+    void retainDevices(const QList<QString> &deviceIds);
     bool recordForDevice(const QString &deviceId, TelemetryRecord *record) const;
     int recordCount() const;
 

@@ -941,7 +941,12 @@ void MainWindow::restorePersistedState()
 
     double temperatureSum = 0.0;
     int temperatureCount = 0;
-    for (const TelemetryRecord &record : latestRecords) {
+    for (const TelemetryRecord &sourceRecord : latestRecords) {
+        if (!m_deviceIds.contains(sourceRecord.deviceId)) {
+            continue;
+        }
+        TelemetryRecord record = sourceRecord;
+        record.status = currentStatusForDevice(record.deviceId);
         m_model->upsertRecord(record);
         if (record.temperature > 0.0) {
             temperatureSum += record.temperature;
@@ -976,6 +981,7 @@ void MainWindow::restorePersistedState()
         m_deviceOnline[heartbeat.deviceId] = heartbeat.online;
         m_deviceCollecting[heartbeat.deviceId] = heartbeat.collecting;
         updateDeviceListItem(index, heartbeat.online, heartbeat.collecting);
+        syncTelemetryStatus(heartbeat.deviceId);
     }
 
     if (!errorMessage.isEmpty()) {
@@ -1200,36 +1206,80 @@ void MainWindow::onDevicesChanged(const QList<DeviceInfo> &devices)
 
     m_onlineDeviceCount = m_controller->onlineDeviceCount();
     rebuildHistoryDeviceCombo();
+    m_model->retainDevices(m_deviceIds);
+    for (const QString &deviceId : m_deviceIds) {
+        syncTelemetryStatus(deviceId);
+    }
 
     applyDeviceFilter();
     updateKpi();
 }
 void MainWindow::updateDeviceListItem(int index, bool online, bool collecting)
 {
+    Q_UNUSED(online);
+    Q_UNUSED(collecting);
     if (index < 0 || index >= ui->deviceList->count()) {
         return;
-    }
-
-    QColor color;
-    QString status;
-    if (!online) {
-        color = QColor(QStringLiteral("#94a3b8"));
-        status = QStringLiteral("未连接");
-    } else if (!collecting) {
-        color = QColor(QStringLiteral("#94a3b8"));
-        status = QStringLiteral("已停止");
-    } else {
-        color = QColor(QStringLiteral("#22c55e"));
-        status = QStringLiteral("采集中");
     }
 
     QListWidgetItem *item = ui->deviceList->item(index);
     const QString deviceId = item->data(Qt::UserRole).toString();
     const QString deviceName = item->data(Qt::UserRole + 1).toString();
-    item->setText(QStringLiteral("●  %1  %2  [%3]").arg(deviceId, deviceName, status));
+    const TelemetryStatus status = currentStatusForDevice(deviceId);
+    QColor color;
+    QString statusText;
+    switch (status) {
+    case TelemetryStatus::Alarm:
+        color = QColor(QStringLiteral("#ef4444"));
+        statusText = QStringLiteral("告警");
+        break;
+    case TelemetryStatus::Offline:
+        color = QColor(QStringLiteral("#94a3b8"));
+        statusText = QStringLiteral("未连接");
+        break;
+    case TelemetryStatus::Stopped:
+        color = QColor(QStringLiteral("#f59e0b"));
+        statusText = QStringLiteral("已停止");
+        break;
+    case TelemetryStatus::Online:
+        color = QColor(QStringLiteral("#22c55e"));
+        statusText = QStringLiteral("采集中");
+        break;
+    }
+
+    item->setText(QStringLiteral("●  %1  %2  [%3]").arg(deviceId, deviceName, statusText));
     item->setForeground(color);
     item->setToolTip(
-        QStringLiteral("%1\n右键：编辑设备信息 / 查看历史报警").arg(status));
+        QStringLiteral("%1\n右键：编辑设备信息 / 查看历史报警").arg(statusText));
+}
+
+TelemetryStatus MainWindow::currentStatusForDevice(const QString &deviceId) const
+{
+    for (const AlarmEvent &event : m_controller->activeAlarms()) {
+        if (event.deviceId == deviceId) {
+            return TelemetryStatus::Alarm;
+        }
+    }
+    if (!m_deviceOnline.value(deviceId, false)) {
+        return TelemetryStatus::Offline;
+    }
+    if (!m_deviceCollecting.value(deviceId, false)) {
+        return TelemetryStatus::Stopped;
+    }
+    return TelemetryStatus::Online;
+}
+
+void MainWindow::syncTelemetryStatus(const QString &deviceId)
+{
+    if (!m_model || !m_deviceIds.contains(deviceId)) {
+        return;
+    }
+    TelemetryRecord record;
+    if (!m_model->recordForDevice(deviceId, &record)) {
+        return;
+    }
+    record.status = currentStatusForDevice(deviceId);
+    m_model->upsertRecord(record);
 }
 
 void MainWindow::onDeviceSelectionChanged(int row)
@@ -1710,7 +1760,12 @@ void MainWindow::onTelemetryBatchReceived(const QList<TelemetryRecord> &records)
     double temperatureSum = 0.0;
     int temperatureCount = 0;
 
-    for (const TelemetryRecord &record : records) {
+    for (const TelemetryRecord &sourceRecord : records) {
+        if (!m_deviceIds.contains(sourceRecord.deviceId)) {
+            continue;
+        }
+        TelemetryRecord record = sourceRecord;
+        record.status = currentStatusForDevice(record.deviceId);
         m_model->upsertRecord(record);
         if (record.status != TelemetryStatus::Online
             && record.status != TelemetryStatus::Alarm) {
@@ -1751,6 +1806,7 @@ void MainWindow::onHeartbeatBatchReceived(const QList<HeartbeatRecord> &heartbea
         m_deviceOnline[heartbeat.deviceId] = heartbeat.online;
         m_deviceCollecting[heartbeat.deviceId] = heartbeat.collecting;
         updateDeviceListItem(index, heartbeat.online, heartbeat.collecting);
+        syncTelemetryStatus(heartbeat.deviceId);
     }
 
     m_onlineDeviceCount = m_controller->onlineDeviceCount();
@@ -1770,6 +1826,7 @@ void MainWindow::onDeviceStateChanged(const QString &deviceId, bool online, bool
     m_deviceOnline[deviceId] = online;
     m_deviceCollecting[deviceId] = collecting;
     updateDeviceListItem(index, online, collecting);
+    syncTelemetryStatus(deviceId);
     applyDeviceFilter();
     updateDeviceControlState();
     updateSelectedChart();
@@ -1785,6 +1842,7 @@ void MainWindow::onOnlineDeviceCountChanged(int count)
 void MainWindow::onAlarmRaised(const AlarmEvent &event)
 {
     appendAlarm(event);
+    syncTelemetryStatus(event.deviceId);
     applyDeviceFilter();
 
     const QSettings settings;
@@ -1820,6 +1878,7 @@ void MainWindow::onAlarmAcknowledged(const AlarmEvent &event)
         ui->overviewAlarmList->insertItem(0, overviewItem);
     }
     updateAlarmItem(overviewItem, event);
+    syncTelemetryStatus(event.deviceId);
     applyDeviceFilter();
     updateKpi();
 }
@@ -1839,6 +1898,7 @@ void MainWindow::onAlarmCleared(const AlarmEvent &event)
         delete ui->overviewAlarmList->takeItem(ui->overviewAlarmList->row(overviewItem));
     }
     showStatusMessage(QStringLiteral("告警已恢复：%1").arg(event.deviceId), 4000);
+    syncTelemetryStatus(event.deviceId);
     applyDeviceFilter();
     updateKpi();
 }

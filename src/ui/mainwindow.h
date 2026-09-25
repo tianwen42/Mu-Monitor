@@ -93,6 +93,8 @@ private:
     void updateSelectedChart();
     void updateDeviceControlState();
     void updateDeviceListItem(int index, bool online, bool collecting);
+    TelemetryStatus currentStatusForDevice(const QString &deviceId) const;
+    void syncTelemetryStatus(const QString &deviceId);
     void appendAlarm(const AlarmEvent &event);
     void updateAlarmItem(QListWidgetItem *item, const AlarmEvent &event);
     QListWidgetItem *findAlarmItem(const QString &eventId) const;
