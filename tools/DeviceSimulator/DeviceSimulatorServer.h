@@ -18,6 +18,8 @@ public:
         HighTemperature,
         HighPressure,
         Offline,
+        BadCrc,
+        ActiveDisconnect,
     };
 
     enum class WireFormat {
@@ -47,6 +49,7 @@ public:
     QString scenarioText(const QString &deviceId) const;
     WireFormat wireFormat() const;
     void setWireFormat(WireFormat format);
+    void setSendIntervalMs(int intervalMs);
 
 signals:
     void runningChanged(bool running);
@@ -58,6 +61,7 @@ private slots:
     void handleNewConnection();
     void handleClientDisconnected();
     void sendTelemetry();
+    void disconnectAllClients();
 
 private:
     Device *findDevice(const QString &deviceId);
@@ -69,6 +73,6 @@ private:
     QTimer m_timer;
     QList<Device> m_devices;
     QList<QTcpSocket *> m_clients;
-    WireFormat m_wireFormat = WireFormat::JsonLines;
+    WireFormat m_wireFormat = WireFormat::ProtocolV1;
     quint32 m_sequence = 0;
 };

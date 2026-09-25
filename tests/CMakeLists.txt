@@ -46,6 +46,23 @@ target_link_libraries(DeviceSimulatorServerTest PRIVATE
     mu_network
 )
 
+mu_add_test(TcpProtocolIntegrationTest
+    TcpProtocolIntegrationTest.cpp
+    ../tools/DeviceSimulator/DeviceSimulatorServer.cpp
+    ../tools/DeviceSimulator/DeviceSimulatorServer.h
+    ../tools/DeviceSimulator/FrameEncoder.cpp
+    ../tools/DeviceSimulator/FrameEncoder.h
+)
+target_include_directories(TcpProtocolIntegrationTest PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../tools/DeviceSimulator
+)
+target_link_libraries(TcpProtocolIntegrationTest PRIVATE
+    Qt::Core
+    Qt::Network
+    Qt::Test
+    mu_network
+)
+
 mu_add_test(TimeUtilsTest
     TimeUtilsTest.cpp
     ../src/utils/TimeUtils.cpp

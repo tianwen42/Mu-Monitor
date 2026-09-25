@@ -10,4 +10,8 @@ public:
                                       quint32 sequence,
                                       const QByteArray &payload,
                                       QString *errorMessage = nullptr);
+    static QByteArray encodeTelemetryWithBadCrc(const QString &deviceId,
+                                                quint32 sequence,
+                                                const QByteArray &payload,
+                                                QString *errorMessage = nullptr);
 };

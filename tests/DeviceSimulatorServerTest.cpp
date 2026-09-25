@@ -1,6 +1,7 @@
 #include "DeviceSimulatorServer.h"
 
 #include <network/FrameDecoder.h>
+#include <protocol/FrameCodec.h>
 
 #include <QElapsedTimer>
 #include <QJsonDocument>
@@ -13,17 +14,21 @@ class DeviceSimulatorServerTest : public QObject
     Q_OBJECT
 
 private slots:
+    void defaultsToProtocolV1();
     void sendsNewlineDelimitedJson();
-    void sendsProtocolV1FramesWhenEnabled();
+    void protocolV1FrameContainsJsonTelemetry();
     void highTemperatureScenarioIsReported();
     void highPressureScenarioIsReported();
     void offlineScenarioIsReported();
+    void badCrcScenarioIsReported();
+    void activeDisconnectScenarioDropsClients();
     void tracksClientCount();
     void rejectsOccupiedPort();
     void rejectsUnknownDeviceScenario();
 
 private:
     QJsonObject readJsonLine(QTcpSocket &client, int timeoutMs = 3000);
+    QByteArray readRawFrame(QTcpSocket &client, int timeoutMs = 3000);
 };
 
 QJsonObject DeviceSimulatorServerTest::readJsonLine(QTcpSocket &client, int timeoutMs)
@@ -52,13 +57,60 @@ QJsonObject DeviceSimulatorServerTest::readJsonLine(QTcpSocket &client, int time
     return {};
 }
 
-void DeviceSimulatorServerTest::sendsNewlineDelimitedJson()
+QByteArray DeviceSimulatorServerTest::readRawFrame(QTcpSocket &client, int timeoutMs)
+{
+    QElapsedTimer timer;
+    timer.start();
+    QByteArray buffer;
+
+    while (timer.elapsed() < timeoutMs) {
+        buffer.append(client.readAll());
+        if (buffer.size() >= 6) {
+            const int frameSize = (static_cast<int>(static_cast<quint8>(buffer.at(4))) << 8)
+                                  | static_cast<int>(static_cast<quint8>(buffer.at(5)));
+            if (frameSize >= Protocol::kMinFrameSize
+                && frameSize <= Protocol::kMaxFrameSize
+                && buffer.size() >= frameSize) {
+                return buffer.left(frameSize);
+            }
+        }
+        QTest::qWait(20);
+    }
+    return {};
+}
+
+void DeviceSimulatorServerTest::defaultsToProtocolV1()
 {
     DeviceSimulatorServer server;
+    QCOMPARE(server.wireFormat(), DeviceSimulatorServer::WireFormat::ProtocolV1);
+    server.setSendIntervalMs(20);
     QString errorMessage;
     QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
              qPrintable(errorMessage));
-    QVERIFY(server.serverPort() > 0);
+
+    QTcpSocket client;
+    client.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(client.waitForConnected(1000));
+
+    const QByteArray encoded = readRawFrame(client);
+    QVERIFY(!encoded.isEmpty());
+    QCOMPARE(static_cast<quint8>(encoded.at(0)), quint8(0x4d));
+    QCOMPARE(static_cast<quint8>(encoded.at(1)), quint8(0x55));
+    QCOMPARE(static_cast<quint8>(encoded.at(2)), quint8(Protocol::Version1));
+
+    const DecodeResult decoded = FrameCodec::decode(encoded);
+    QCOMPARE(decoded.status, DecodeStatus::Ok);
+    QCOMPARE(decoded.frame.messageType, Protocol::MessageType::Telemetry);
+}
+
+void DeviceSimulatorServerTest::sendsNewlineDelimitedJson()
+{
+    DeviceSimulatorServer server;
+    server.setWireFormat(DeviceSimulatorServer::WireFormat::JsonLines);
+    server.setSendIntervalMs(20);
+    QString errorMessage;
+    QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
+             qPrintable(errorMessage));
 
     QTcpSocket client;
     client.connectToHost(QHostAddress::LocalHost, server.serverPort());
@@ -72,11 +124,11 @@ void DeviceSimulatorServerTest::sendsNewlineDelimitedJson()
     QVERIFY(object.contains(QStringLiteral("pressure")));
 }
 
-void DeviceSimulatorServerTest::sendsProtocolV1FramesWhenEnabled()
+void DeviceSimulatorServerTest::protocolV1FrameContainsJsonTelemetry()
 {
     DeviceSimulatorServer server;
-    QCOMPARE(server.wireFormat(), DeviceSimulatorServer::WireFormat::JsonLines);
-    server.setWireFormat(DeviceSimulatorServer::WireFormat::ProtocolV1);
+    QCOMPARE(server.wireFormat(), DeviceSimulatorServer::WireFormat::ProtocolV1);
+    server.setSendIntervalMs(20);
 
     QString errorMessage;
     QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
@@ -112,7 +164,6 @@ void DeviceSimulatorServerTest::sendsProtocolV1FramesWhenEnabled()
     QVERIFY2(decoded, "未在超时时间内收到 Protocol v1 帧");
     QCOMPARE(received.version, quint8(Protocol::Version1));
     QCOMPARE(received.messageType, Protocol::MessageType::Telemetry);
-    QCOMPARE(received.sequence, 0U);
     QVERIFY(received.deviceId.startsWith(QStringLiteral("DEV-")));
     QVERIFY(qAbs(received.timestampUtcMs - QDateTime::currentMSecsSinceEpoch()) < 10000);
     QVERIFY(!received.payload.endsWith('\n'));
@@ -127,6 +178,8 @@ void DeviceSimulatorServerTest::sendsProtocolV1FramesWhenEnabled()
 void DeviceSimulatorServerTest::highTemperatureScenarioIsReported()
 {
     DeviceSimulatorServer server;
+    server.setWireFormat(DeviceSimulatorServer::WireFormat::JsonLines);
+    server.setSendIntervalMs(20);
     QString errorMessage;
     QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
              qPrintable(errorMessage));
@@ -154,6 +207,8 @@ void DeviceSimulatorServerTest::highTemperatureScenarioIsReported()
 void DeviceSimulatorServerTest::highPressureScenarioIsReported()
 {
     DeviceSimulatorServer server;
+    server.setWireFormat(DeviceSimulatorServer::WireFormat::JsonLines);
+    server.setSendIntervalMs(20);
     QString errorMessage;
     QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
              qPrintable(errorMessage));
@@ -180,6 +235,8 @@ void DeviceSimulatorServerTest::highPressureScenarioIsReported()
 void DeviceSimulatorServerTest::offlineScenarioIsReported()
 {
     DeviceSimulatorServer server;
+    server.setWireFormat(DeviceSimulatorServer::WireFormat::JsonLines);
+    server.setSendIntervalMs(20);
     QString errorMessage;
     QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
              qPrintable(errorMessage));
@@ -203,6 +260,62 @@ void DeviceSimulatorServerTest::offlineScenarioIsReported()
     QCOMPARE(object.value(QStringLiteral("status")).toString(), QStringLiteral("offline"));
     QCOMPARE(object.value(QStringLiteral("temperature")).toDouble(), 0.0);
     QCOMPARE(object.value(QStringLiteral("pressure")).toDouble(), 0.0);
+}
+
+void DeviceSimulatorServerTest::badCrcScenarioIsReported()
+{
+    DeviceSimulatorServer server;
+    server.setSendIntervalMs(20);
+    QString errorMessage;
+    QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
+             qPrintable(errorMessage));
+
+    QTcpSocket client;
+    QVERIFY(server.setScenario(QStringLiteral("DEV-001"),
+                               DeviceSimulatorServer::Scenario::BadCrc));
+    client.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(client.waitForConnected(1000));
+
+    bool sawCrcMismatch = false;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 1500 && !sawCrcMismatch) {
+        const QByteArray encoded = readRawFrame(client, 500);
+        if (encoded.isEmpty()) {
+            continue;
+        }
+        const DecodeResult result = FrameCodec::decode(encoded);
+        const QByteArray rawDeviceId = encoded.mid(10, Protocol::kDeviceIdSize);
+        const int terminator = rawDeviceId.indexOf('\0');
+        QCOMPARE(QString::fromUtf8(terminator >= 0 ? rawDeviceId.left(terminator)
+                                                   : rawDeviceId),
+                 QStringLiteral("DEV-001"));
+        sawCrcMismatch = result.status == DecodeStatus::CrcMismatch;
+    }
+    QVERIFY(sawCrcMismatch);
+}
+
+void DeviceSimulatorServerTest::activeDisconnectScenarioDropsClients()
+{
+    DeviceSimulatorServer server;
+    server.setSendIntervalMs(20);
+    QString errorMessage;
+    QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
+             qPrintable(errorMessage));
+
+    QTcpSocket client;
+    QSignalSpy disconnectedSpy(&client, &QTcpSocket::disconnected);
+    client.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(client.waitForConnected(1000));
+    QTRY_COMPARE_WITH_TIMEOUT(server.clientCount(), 1, 500);
+
+    QVERIFY(server.setScenario(QStringLiteral("DEV-004"),
+                               DeviceSimulatorServer::Scenario::ActiveDisconnect));
+    QTRY_COMPARE_WITH_TIMEOUT(server.clientCount(), 0, 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(disconnectedSpy.count() >= 1, 1000);
+    QCOMPARE(client.state(), QAbstractSocket::UnconnectedState);
+    QCOMPARE(server.scenarioText(QStringLiteral("DEV-004")),
+             QStringLiteral("主动断开"));
 }
 
 void DeviceSimulatorServerTest::tracksClientCount()

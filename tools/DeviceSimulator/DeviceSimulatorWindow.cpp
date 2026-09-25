@@ -3,6 +3,7 @@
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QColor>
+#include <QComboBox>
 #include <QDateTime>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -60,6 +61,14 @@ void DeviceSimulatorWindow::setupUi()
     m_clientCountLabel = new QLabel(serverGroup);
     m_clientCountLabel->setObjectName(QStringLiteral("clientCountLabel"));
     serverLayout->addWidget(m_clientCountLabel);
+
+    serverLayout->addWidget(new QLabel(QStringLiteral("发送格式"), serverGroup));
+    m_wireFormatCombo = new QComboBox(serverGroup);
+    m_wireFormatCombo->addItem(QStringLiteral("Protocol v1（二进制）"),
+                               static_cast<int>(DeviceSimulatorServer::WireFormat::ProtocolV1));
+    m_wireFormatCombo->addItem(QStringLiteral("JSON Lines（测试模式）"),
+                               static_cast<int>(DeviceSimulatorServer::WireFormat::JsonLines));
+    serverLayout->addWidget(m_wireFormatCombo);
     rootLayout->addWidget(serverGroup);
 
     auto *deviceGroup = new QGroupBox(QStringLiteral("模拟设备"), central);
@@ -88,10 +97,14 @@ void DeviceSimulatorWindow::setupUi()
     m_highTemperatureButton = new QPushButton(QStringLiteral("高温"), deviceGroup);
     m_highPressureButton = new QPushButton(QStringLiteral("高压"), deviceGroup);
     m_offlineButton = new QPushButton(QStringLiteral("离线"), deviceGroup);
+    m_badCrcButton = new QPushButton(QStringLiteral("坏 CRC"), deviceGroup);
+    m_disconnectButton = new QPushButton(QStringLiteral("主动断开"), deviceGroup);
     m_normalButton = new QPushButton(QStringLiteral("恢复正常"), deviceGroup);
     scenarioLayout->addWidget(m_highTemperatureButton);
     scenarioLayout->addWidget(m_highPressureButton);
     scenarioLayout->addWidget(m_offlineButton);
+    scenarioLayout->addWidget(m_badCrcButton);
+    scenarioLayout->addWidget(m_disconnectButton);
     scenarioLayout->addWidget(m_normalButton);
     scenarioLayout->addStretch();
     deviceLayout->addLayout(scenarioLayout);
@@ -141,9 +154,21 @@ void DeviceSimulatorWindow::setupConnections()
     connect(m_offlineButton, &QPushButton::clicked, this, [this]() {
         setScenario(DeviceSimulatorServer::Scenario::Offline);
     });
+    connect(m_badCrcButton, &QPushButton::clicked, this, [this]() {
+        setScenario(DeviceSimulatorServer::Scenario::BadCrc);
+    });
+    connect(m_disconnectButton, &QPushButton::clicked, this, [this]() {
+        setScenario(DeviceSimulatorServer::Scenario::ActiveDisconnect);
+    });
     connect(m_normalButton, &QPushButton::clicked, this, [this]() {
         setScenario(DeviceSimulatorServer::Scenario::Normal);
     });
+
+    connect(m_wireFormatCombo, &QComboBox::currentIndexChanged,
+            this, [this](int index) {
+                m_server.setWireFormat(static_cast<DeviceSimulatorServer::WireFormat>(
+                    m_wireFormatCombo->itemData(index).toInt()));
+            });
 
     connect(&m_server, &DeviceSimulatorServer::runningChanged,
             this, &DeviceSimulatorWindow::updateServerState);
@@ -194,8 +219,12 @@ void DeviceSimulatorWindow::updateServerState(bool running)
                                    : QStringLiteral("启动服务"));
     m_hostEdit->setEnabled(!running);
     m_portSpin->setEnabled(!running);
+    m_wireFormatCombo->setEnabled(!running);
     statusBar()->showMessage(
-        running ? QStringLiteral("TCP Server 正在连续发送模拟数据")
+        running ? QStringLiteral("TCP Server 正在按 %1 发送模拟数据")
+                      .arg(m_server.wireFormat() == DeviceSimulatorServer::WireFormat::ProtocolV1
+                               ? QStringLiteral("Protocol v1")
+                               : QStringLiteral("JSON Lines"))
                 : QStringLiteral("TCP Server 已停止"));
 }
 
@@ -254,6 +283,8 @@ void DeviceSimulatorWindow::updateScenarioButtons()
     m_highTemperatureButton->setEnabled(hasSelection);
     m_highPressureButton->setEnabled(hasSelection);
     m_offlineButton->setEnabled(hasSelection);
+    m_badCrcButton->setEnabled(hasSelection);
+    m_disconnectButton->setEnabled(hasSelection);
     m_normalButton->setEnabled(hasSelection);
 }
 

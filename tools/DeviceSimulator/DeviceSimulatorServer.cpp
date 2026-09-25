@@ -130,7 +130,12 @@ void DeviceSimulatorServer::setWireFormat(WireFormat format)
     m_wireFormat = format;
     emit logMessage(m_wireFormat == WireFormat::ProtocolV1
                         ? QStringLiteral("[协议] 已切换为 Protocol v1 二进制帧")
-                        : QStringLiteral("[协议] 已切换为 JSON Lines 兼容模式"));
+                        : QStringLiteral("[协议] 已切换为 JSON Lines 测试模式"));
+}
+
+void DeviceSimulatorServer::setSendIntervalMs(int intervalMs)
+{
+    m_timer.setInterval(qMax(10, intervalMs));
 }
 
 void DeviceSimulatorServer::handleNewConnection()
@@ -168,7 +173,13 @@ void DeviceSimulatorServer::sendTelemetry()
         return (QRandomGenerator::global()->generateDouble() - 0.5) * amplitude;
     };
 
+    bool disconnectRequested = false;
     for (Device &device : m_devices) {
+        if (device.scenario == Scenario::ActiveDisconnect) {
+            disconnectRequested = true;
+            continue;
+        }
+
         QString alarm;
         if (device.scenario == Scenario::HighTemperature) {
             device.temperature = 86.5 + jitter(1.0);
@@ -192,7 +203,13 @@ void DeviceSimulatorServer::sendTelemetry()
         QByteArray payload = createJsonPayload(device);
         if (m_wireFormat == WireFormat::ProtocolV1) {
             QString errorMessage;
-            payload = FrameEncoder::encodeTelemetry(device.id, m_sequence++, payload, &errorMessage);
+            if (device.scenario == Scenario::BadCrc) {
+                payload = FrameEncoder::encodeTelemetryWithBadCrc(
+                    device.id, m_sequence++, payload, &errorMessage);
+            } else {
+                payload = FrameEncoder::encodeTelemetry(
+                    device.id, m_sequence++, payload, &errorMessage);
+            }
             if (payload.isEmpty()) {
                 emit logMessage(QStringLiteral("[编码] %1 帧编码失败：%2")
                                     .arg(device.id, errorMessage));
@@ -220,7 +237,26 @@ void DeviceSimulatorServer::sendTelemetry()
         }
     }
 
+    if (disconnectRequested) {
+        disconnectAllClients();
+    }
+
     emit devicesChanged();
+}
+
+void DeviceSimulatorServer::disconnectAllClients()
+{
+    if (m_clients.isEmpty()) {
+        return;
+    }
+
+    emit logMessage(QStringLiteral("[场景] 主动断开全部客户端"));
+    const QList<QTcpSocket *> clients = m_clients;
+    for (QTcpSocket *client : clients) {
+        if (client->state() != QAbstractSocket::UnconnectedState) {
+            client->disconnectFromHost();
+        }
+    }
 }
 
 DeviceSimulatorServer::Device *DeviceSimulatorServer::findDevice(const QString &deviceId)
@@ -292,6 +328,10 @@ QString DeviceSimulatorServer::scenarioName(Scenario scenario) const
         return QStringLiteral("高压");
     case Scenario::Offline:
         return QStringLiteral("离线");
+    case Scenario::BadCrc:
+        return QStringLiteral("坏 CRC");
+    case Scenario::ActiveDisconnect:
+        return QStringLiteral("主动断开");
     case Scenario::Normal:
     default:
         return QStringLiteral("正常");

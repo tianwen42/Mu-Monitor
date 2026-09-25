@@ -5,6 +5,7 @@
 #include <QMainWindow>
 
 class QCloseEvent;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -45,6 +46,9 @@ private:
     QPushButton *m_highTemperatureButton = nullptr;
     QPushButton *m_highPressureButton = nullptr;
     QPushButton *m_offlineButton = nullptr;
+    QPushButton *m_badCrcButton = nullptr;
+    QPushButton *m_disconnectButton = nullptr;
     QPushButton *m_normalButton = nullptr;
+    QComboBox *m_wireFormatCombo = nullptr;
     QPlainTextEdit *m_logOutput = nullptr;
 };

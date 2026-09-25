@@ -27,8 +27,22 @@ ctest --test-dir build/check-debug --output-on-failure
 - `TelemetryTableModelTest`：设备记录插入、更新、格式化列和状态颜色。
 - `DatabaseManagerTest`：SQLite 初始化、用户、遥测、心跳和日志。
 - `ExcelExporterTest`：XLSX 导出结果。
-- `DeviceSimulatorServerTest`：真实 TCP 监听、客户端连接、JSON Lines 和高温场景。
+- `ProtocolCodecTest`：CRC16、固定向量、网络字节序、分片、粘包、坏 CRC、未知版本、非法长度和截断帧。
+- `TcpDeviceDataSourceTest`：异步 TCP 数据源、帧收发、CRC 隔离、超时、指数退避和主动断开。
+- `DeviceSimulatorServerTest`：真实 TCP 监听、Protocol v1、JSON Lines 测试模式、故障场景和主动断开。
+- `TcpProtocolIntegrationTest`：`DeviceSimulatorServer` 与 `TcpDeviceDataSource` 的真实 TCP 端到端流、错误隔离和重连。
 - `MainWindowResponsiveTest`：主窗口缩放、KPI 自动重排和趋势/告警布局。
+
+## 2026-09-25 协议与 TCP 回归结果
+
+Debug 全量构建和测试通过。协议相关目标结果：
+
+| 测试目标 | 业务用例 | 主要覆盖 | Debug |
+| --- | ---: | --- | --- |
+| `ProtocolCodecTest` | 13 | CRC、固定向量、长度/版本校验、分片、粘包、坏 CRC、截断和重新同步 | 通过 |
+| `TcpDeviceDataSourceTest` | 9 | 线程化 TCP 数据源、收发、读超时、退避和重连抑制 | 通过 |
+| `DeviceSimulatorServerTest` | 11 | 默认二进制协议、JSON Lines 测试模式、五个故障场景 | 通过 |
+| `TcpProtocolIntegrationTest` | 3 | 真实 TCP 正常流、坏 CRC 隔离与主动断开重连 | 通过 |
 
 ## 编写原则
 

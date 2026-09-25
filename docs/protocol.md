@@ -80,16 +80,27 @@ TCP 是字节流，接收端不能假设一次 `readyRead()` 对应一帧。实�
 - 一个读取缓冲区包含多帧。
 - 无效 Magic、非法长度、未知版本、未知消息类型、非法设备 ID 和 CRC 错误。
 
-`FrameDecoder` 使用内部缓冲区增量解析。只有收到完整且校验通过的帧时才向上层发出 `Frame`。完整头可用但 CRC 错误时，接收端丢弃该帧并按长度继续搜索下一帧；非法 Magic 或非法长度时，从候选 Magic 后逐字节重新同步。
+`FrameDecoder` 使用内部缓冲区增量解析。只有收到完整且校验通过的帧时才向上层发出 `Frame`。完整头可用但 CRC 错误时，接收端报告协议错误并按声明长度丢弃当前帧；非法 Magic、非法长度或截断帧上下文，则从候选 Magic 和完整有效帧位置重新同步。TCP 连接关闭或测试结束时调用 `finish()`，未组成完整帧的剩余数据会作为截断错误上报。
 
 ## 8. DeviceSimulator 兼容模式
 
-`DeviceSimulator` 默认继续发送原有 JSON Lines，保证现有手工联调、旧测试和迁移工具可用。通过 `DeviceSimulatorServer::setWireFormat()` 可切换：
+`DeviceSimulator` 默认发送 Protocol v1 二进制帧。通过 `DeviceSimulatorServer::setWireFormat()` 可切换：
 
-- `WireFormat::JsonLines`：每行一个紧凑 JSON 对象，以 `\n` 结束，不使用 v1 帧。
 - `WireFormat::ProtocolV1`：每个 JSON 对象作为 `Telemetry` 帧 payload，由 `FrameCodec` 编码后发送，不再附加换行符。
+- `WireFormat::JsonLines`：每行一个紧凑 JSON 对象，以 `\n` 结束，不使用 v1 帧；仅作为兼容和诊断测试模式保留。
 
-迁移完成后，主程序数据源应优先使用 `TcpDeviceDataSource` 和 v1 二进制帧；JSON Lines 仅保留为兼容和诊断路径。
+模拟器场景与协议注入：
+
+| 场景 | 行为 |
+| --- | --- |
+| `Normal` | 正常遥测。 |
+| `HighTemperature` | 温度超过 80 °C，并携带 `temperature_high` 告警。 |
+| `HighPressure` | 压力超过 1.80 MPa，并携带 `pressure_high` 告警。 |
+| `Offline` | 设备在线和采集状态均为 false，采集值归零。 |
+| `BadCrc` | 编码合法 v1 帧后篡改 CRC 字段，用于验证客户端错误隔离。 |
+| `ActiveDisconnect` | 主动断开当前全部客户端，用于验证客户端自动重连。 |
+
+主程序数据源应优先使用 `TcpDeviceDataSource` 和 v1 二进制帧；JSON Lines 仅保留为兼容和诊断路径。
 
 ## 9. 示例
 
