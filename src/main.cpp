@@ -1,9 +1,10 @@
 #include "app/AppController.h"
 #include "auth/AuthTypes.h"
+#include "config/DataSourceConfig.h"
 #include "database/DatabaseManager.h"
 #include "database/SqliteTelemetryRepository.h"
-#include "network/SimulationDataSource.h"
-#include "ui/LoginDialog.h"
+#include "network/DeviceDataSourceFactory.h"
+#include "network/IDeviceDataSource.h"#include "ui/LoginDialog.h"
 #include "ui/mainwindow.h"
 
 #include <QApplication>
@@ -102,9 +103,25 @@ int main(int argc, char *argv[])
         QStringLiteral("INFO"), QStringLiteral("application"),
         QStringLiteral("应用启动，当前用户：%1").arg(currentUser));
 
+    const ApplicationConfig applicationConfig = ApplicationConfig::fromSettings(settings);
     int exitCode = 0;
     {
-        SimulationDataSource dataSource;
+        QObject dataSourceOwner;
+        QString dataSourceError;
+        IDeviceDataSource *dataSource = DeviceDataSourceFactory::create(
+            applicationConfig.dataSource, &dataSourceOwner, &dataSourceError);
+        if (!dataSource) {
+            QMessageBox::critical(
+                nullptr,
+                QStringLiteral("数据源初始化失败"),
+                dataSourceError);
+            DatabaseManager::instance().insertLog(
+                QStringLiteral("ERROR"), QStringLiteral("connection"),
+                QStringLiteral("数据源初始化失败：%1").arg(dataSourceError));
+            DatabaseManager::instance().shutdown();
+            return 1;
+        }
+
         SqliteTelemetryRepository telemetryRepository(
             DatabaseManager::instance().databasePath());
         QString repositoryError;
@@ -117,9 +134,11 @@ int main(int argc, char *argv[])
             DatabaseManager::instance().shutdown();
             return 1;
         }
+            DatabaseManager::instance().shutdown();
+            return 1;
+        }
 
-        AppController controller(&dataSource, &telemetryRepository, currentUser);
-        MainWindow w(&controller, currentUser);
+        AppController controller(dataSource, &telemetryRepository, currentUser);        MainWindow w(&controller, currentUser);
         w.setWindowIcon(appIcon);
         w.show();
         controller.start();
@@ -129,6 +148,7 @@ int main(int argc, char *argv[])
         controller.stop();
         telemetryRepository.shutdown();
     }
+
     DatabaseManager::instance().insertLog(
         QStringLiteral("INFO"), QStringLiteral("application"), QStringLiteral("应用退出"));
     DatabaseManager::instance().shutdown();

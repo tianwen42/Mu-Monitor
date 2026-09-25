@@ -307,6 +307,30 @@ target_link_libraries(TcpDeviceDataSourceAdapterTest PRIVATE
     Qt::Test
     mu_network
 )
+mu_add_test(DeviceDataSourceFactoryTest
+    DeviceDataSourceFactoryTest.cpp
+    ../src/config/DataSourceConfig.cpp
+    ../src/config/DataSourceConfig.h
+    ../src/core/Device.cpp
+    ../src/core/Device.h
+    ../src/core/TelemetrySample.cpp
+    ../src/core/TelemetrySample.h
+    ../src/network/DeviceDataSourceFactory.cpp
+    ../src/network/DeviceDataSourceFactory.h
+    ../src/network/IDeviceDataSource.h
+    ../src/network/ProtocolPayloadMapper.cpp
+    ../src/network/ProtocolPayloadMapper.h
+    ../src/network/SimulationDataSource.cpp
+    ../src/network/SimulationDataSource.h
+    ../src/network/TcpDeviceDataSourceAdapter.cpp
+    ../src/network/TcpDeviceDataSourceAdapter.h
+)
+target_link_libraries(DeviceDataSourceFactoryTest PRIVATE
+    Qt::Core
+    Qt::Network
+    Qt::Test
+    mu_network
+)
 mu_add_test(UserManagementTest
     UserManagementTest.cpp
     ../src/database/DataDirectory.cpp
