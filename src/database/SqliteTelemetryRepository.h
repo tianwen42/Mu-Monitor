@@ -32,6 +32,11 @@ public:
 
     QFuture<TelemetryRecordsResult> latestDeviceRecords() override;
     QFuture<HeartbeatRecordsResult> latestHeartbeatRecords() override;
+    QFuture<TelemetryRecordsResult> recentTelemetryRecords(
+        int limit, const QString &deviceId = QString()) override;
+    QFuture<TelemetryRecordsResult> telemetryHistory(
+        const QDateTime &start, const QDateTime &end,
+        const QString &deviceId = QString(), int limit = 2000) override;
     QFuture<TelemetryRecordsResult> telemetryBetween(
         const QDateTime &start, const QDateTime &end) override;
     QFuture<TelemetryCountResult> telemetryRecordCount() override;

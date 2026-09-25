@@ -177,6 +177,9 @@ mu_add_test(MainWindowResponsiveTest
     ../src/database/DataDirectory.h
     ../src/database/DatabaseManager.cpp
     ../src/database/DatabaseManager.h
+    ../src/database/TelemetryRepository.h
+    ../src/database/SqliteTelemetryRepository.cpp
+    ../src/database/SqliteTelemetryRepository.h
     ../src/app/AppController.cpp
     ../src/app/AppController.h
     ../src/app/MonitoringService.cpp
@@ -252,6 +255,9 @@ mu_add_test(ApplicationLayerTest
     ../src/database/DataDirectory.h
     ../src/database/DatabaseManager.cpp
     ../src/database/DatabaseManager.h
+    ../src/database/TelemetryRepository.h
+    ../src/database/SqliteTelemetryRepository.cpp
+    ../src/database/SqliteTelemetryRepository.h
     ../src/network/IDeviceDataSource.h
     ../src/network/SimulationDataSource.cpp
     ../src/network/SimulationDataSource.h

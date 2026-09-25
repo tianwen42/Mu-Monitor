@@ -61,6 +61,11 @@ public:
 
     virtual QFuture<TelemetryRecordsResult> latestDeviceRecords() = 0;
     virtual QFuture<HeartbeatRecordsResult> latestHeartbeatRecords() = 0;
+    virtual QFuture<TelemetryRecordsResult> recentTelemetryRecords(
+        int limit, const QString &deviceId = QString()) = 0;
+    virtual QFuture<TelemetryRecordsResult> telemetryHistory(
+        const QDateTime &start, const QDateTime &end,
+        const QString &deviceId = QString(), int limit = 2000) = 0;
     virtual QFuture<TelemetryRecordsResult> telemetryBetween(
         const QDateTime &start, const QDateTime &end) = 0;
     virtual QFuture<TelemetryCountResult> telemetryRecordCount() = 0;
