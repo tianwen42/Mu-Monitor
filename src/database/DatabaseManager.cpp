@@ -19,7 +19,7 @@
 namespace {
 constexpr int kPasswordIterations = 100000;
 constexpr int kPasswordKeyLength = 32;
-constexpr int kCurrentSchemaVersion = 1;
+constexpr int kCurrentSchemaVersion = 2;
 constexpr int kBusyTimeoutMs = 5000;
 const char *kConnectionName = "mu_monitor_sqlite";
 
@@ -400,16 +400,22 @@ bool DatabaseManager::migrateSchema(bool databaseExisted, QString *errorMessage)
                 || !normalizeTelemetryStatusStorage(&migrationError)) {
                 return rollbackFail(migrationError);
             }
+        } else if (targetVersion == 2) {
+            if (!ensureAuthSchema(&migrationError)) {
+                return rollbackFail(migrationError);
+            }
         } else {
             return rollbackFail(QStringLiteral("缺少数据库迁移 %1").arg(targetVersion));
         }
-
         QSqlQuery recordVersion(m_database);
         recordVersion.prepare(QStringLiteral(
             "INSERT INTO schema_version (version, description, applied_at) "
             "VALUES (?, ?, ?)"));
         recordVersion.addBindValue(targetVersion);
-        recordVersion.addBindValue(QStringLiteral("基线数据库结构"));
+        recordVersion.addBindValue(
+            targetVersion == 1
+                ? QStringLiteral("基线数据库结构")
+                : QStringLiteral("用户、角色、权限与审计结构"));
         recordVersion.addBindValue(TimeUtils::toUtcIso8601());
         if (!recordVersion.exec()) {
             return rollbackFail(QStringLiteral("记录数据库版本 %1 失败：%2")
@@ -698,6 +704,125 @@ bool DatabaseManager::createTables(QString *errorMessage)
             if (errorMessage) *errorMessage = m_lastError;
             return false;
         }
+    }
+
+    return true;
+}
+
+bool DatabaseManager::ensureAuthSchema(QString *errorMessage)
+{
+    QSqlQuery query(m_database);
+
+    const QList<QPair<QString, QString>> userColumns = {
+        {QStringLiteral("display_name"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("enabled"), QStringLiteral("INTEGER NOT NULL DEFAULT 1")},
+        {QStringLiteral("password_scheme"),
+         QStringLiteral("TEXT NOT NULL DEFAULT 'legacy_sha256'")},
+        {QStringLiteral("password_iterations"), QStringLiteral("INTEGER NOT NULL DEFAULT 100000")},
+        {QStringLiteral("updated_at"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+    };
+    for (const auto &column : userColumns) {
+        if (!ensureColumn(QStringLiteral("users"), column.first,
+                          column.second, errorMessage)) {
+            return false;
+        }
+    }
+
+    const QString rolesSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS roles ("
+        "code TEXT PRIMARY KEY,"
+        "display_name TEXT NOT NULL,"
+        "description TEXT NOT NULL DEFAULT '',"
+        "built_in INTEGER NOT NULL DEFAULT 1"
+        ")");
+    if (!query.exec(rolesSql)) {
+        m_lastError = QStringLiteral("创建 roles 表失败：%1").arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString rolePermissionsSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS role_permissions ("
+        "role_code TEXT NOT NULL,"
+        "permission_code TEXT NOT NULL,"
+        "PRIMARY KEY (role_code, permission_code),"
+        "FOREIGN KEY (role_code) REFERENCES roles(code)"
+        ")");
+    if (!query.exec(rolePermissionsSql)) {
+        m_lastError = QStringLiteral("创建 role_permissions 表失败：%1")
+                          .arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString roleAssignmentsSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS role_assignments ("
+        "user_id INTEGER PRIMARY KEY,"
+        "role_code TEXT NOT NULL,"
+        "assigned_at TEXT NOT NULL,"
+        "assigned_by TEXT NOT NULL DEFAULT '',"
+        "FOREIGN KEY (user_id) REFERENCES users(id),"
+        "FOREIGN KEY (role_code) REFERENCES roles(code)"
+        ")");
+    if (!query.exec(roleAssignmentsSql)) {
+        m_lastError = QStringLiteral("创建 role_assignments 表失败：%1")
+                          .arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString auditLogsSql = QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS audit_logs ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "occurred_at TEXT NOT NULL,"
+        "actor_username TEXT NOT NULL,"
+        "target_username TEXT NOT NULL,"
+        "event_type TEXT NOT NULL,"
+        "result TEXT NOT NULL,"
+        "context TEXT NOT NULL DEFAULT ''"
+        ")");
+    if (!query.exec(auditLogsSql)) {
+        m_lastError = QStringLiteral("创建 audit_logs 表失败：%1")
+                          .arg(query.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QStringList indexes = {
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_audit_logs_time "
+                       "ON audit_logs(occurred_at)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_role_assignments_role "
+                       "ON role_assignments(role_code)"),
+    };
+    for (const QString &indexSql : indexes) {
+        if (!query.exec(indexSql)) {
+            m_lastError = QStringLiteral("创建认证索引失败：%1")
+                              .arg(query.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    QSqlQuery normalizeDisplayName(m_database);
+    normalizeDisplayName.prepare(QStringLiteral(
+        "UPDATE users SET display_name = username "
+        "WHERE display_name IS NULL OR display_name = ''"));
+    if (!normalizeDisplayName.exec()) {
+        m_lastError = QStringLiteral("补齐用户显示名失败：%1")
+                          .arg(normalizeDisplayName.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery normalizeUpdatedAt(m_database);
+    normalizeUpdatedAt.prepare(QStringLiteral(
+        "UPDATE users SET updated_at = created_at "
+        "WHERE updated_at IS NULL OR updated_at = ''"));
+    if (!normalizeUpdatedAt.exec()) {
+        m_lastError = QStringLiteral("补齐用户更新时间失败：%1")
+                          .arg(normalizeUpdatedAt.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
     }
 
     return true;

@@ -266,6 +266,8 @@ target_link_libraries(ProtocolPayloadMapperTest PRIVATE
 
 mu_add_test(UserManagementTest
     UserManagementTest.cpp
+    ../src/database/DataDirectory.cpp
+    ../src/database/DataDirectory.h
     ../src/core/BusinessStates.cpp
     ../src/core/BusinessStates.h
     ../src/database/DatabaseManager.cpp

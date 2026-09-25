@@ -161,8 +161,12 @@ void SettingsDialog::setupPages()
 
     QWidget *storagePage = createFormPage();
     auto *storageForm = qobject_cast<QFormLayout *>(storagePage->layout());
-    const QString defaultDbPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-        + QStringLiteral("/mu-monitor.db");
+    QString defaultDbPath = DatabaseManager::instance().databasePath();
+    if (defaultDbPath.isEmpty()) {
+        defaultDbPath = QStandardPaths::writableLocation(
+                            QStandardPaths::AppLocalDataLocation)
+            + QStringLiteral("/database/mu-monitor.db");
+    }
     auto *databasePathEdit = new QLineEdit(defaultDbPath);
     auto *browseButton = new QPushButton(QStringLiteral("浏览..."));
     auto *retentionSpin = new QSpinBox;

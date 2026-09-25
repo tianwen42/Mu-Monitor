@@ -80,6 +80,7 @@ private:
                               const QString &destinationPath,
                               QString *errorMessage);
     bool createTables(QString *errorMessage);
+    bool ensureAuthSchema(QString *errorMessage);
     bool normalizeTimestampStorage(QString *errorMessage);
     bool normalizeTelemetryStatusStorage(QString *errorMessage);
     bool ensureColumn(const QString &table, const QString &column,

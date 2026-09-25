@@ -7,6 +7,7 @@
 #include "database/UserRepository.h"
 #include "utils/TimeUtils.h"
 
+#include <memory>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -14,7 +15,9 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <memory>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QtTest>
 
 class UserManagementTest : public QObject
@@ -25,6 +28,7 @@ private slots:
     void initTestCase();
     void init();
     void cleanup();
+    void cleanupTestCase();
 
     void rejectsDuplicateUser();
     void editsUser();
@@ -50,6 +54,9 @@ private:
     bool removeTestDataDirectory() const;
 
     QString m_dataDirectory;
+    std::unique_ptr<QTemporaryDir> m_tempDirectory;
+    QByteArray m_originalDataDirectory;
+    bool m_hadDataDirectory = false;
 };
 
 void UserManagementTest::initTestCase()
@@ -59,14 +66,33 @@ void UserManagementTest::initTestCase()
     QCoreApplication::setApplicationName(
         QStringLiteral("Mu-MonitorUserManagementTest-%1")
             .arg(QCoreApplication::applicationPid()));
-    m_dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    m_tempDirectory = std::make_unique<QTemporaryDir>(
+        QDir::tempPath() + QStringLiteral("/Mu-MonitorUserManagementTest-XXXXXX"));
+    QVERIFY(m_tempDirectory->isValid());
+    m_dataDirectory = m_tempDirectory->path();
+    m_hadDataDirectory = qEnvironmentVariableIsSet("MU_MONITOR_DATA_DIR");
+    if (m_hadDataDirectory) {
+        m_originalDataDirectory = qgetenv("MU_MONITOR_DATA_DIR");
+    }
+    qputenv("MU_MONITOR_DATA_DIR", m_dataDirectory.toUtf8());
     QVERIFY(!m_dataDirectory.isEmpty());
+}
+
+void UserManagementTest::cleanupTestCase()
+{
+    DatabaseManager::instance().shutdown();
+    if (m_hadDataDirectory) {
+        qputenv("MU_MONITOR_DATA_DIR", m_originalDataDirectory);
+    } else {
+        qunsetenv("MU_MONITOR_DATA_DIR");
+    }
 }
 
 void UserManagementTest::init()
 {
     DatabaseManager::instance().shutdown();
-    removeTestDataDirectory();
+    QVERIFY(removeTestDataDirectory());
+    QVERIFY(QDir().mkpath(m_dataDirectory));
     QString errorMessage;
     QVERIFY2(initializeDatabase(&errorMessage), qPrintable(errorMessage));
 }
@@ -92,8 +118,7 @@ bool UserManagementTest::removeTestDataDirectory() const
     }
 
     const QString normalized = QDir::fromNativeSeparators(m_dataDirectory).toLower();
-    if (!normalized.contains(QStringLiteral("qttest"))
-        && !normalized.contains(QStringLiteral("mu-monitorusermanagementtest"))) {
+    if (!normalized.contains(QStringLiteral("mu-monitorusermanagementtest"))) {
         return false;
     }
 
@@ -485,5 +510,3 @@ void UserManagementTest::doesNotPersistSensitiveInformation()
 QTEST_MAIN(UserManagementTest)
 
 #include "UserManagementTest.moc"
-
-

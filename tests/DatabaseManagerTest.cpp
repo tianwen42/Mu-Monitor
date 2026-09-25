@@ -41,6 +41,7 @@ private slots:
     void importsLegacyDatabaseAndKeepsOriginal();
     void rejectsNewAndLegacyDatabaseConflict();
     void createsBackupBeforeMigration();
+    void migratesAuthSchemaWithBackup();
 
     void rejectsInvalidCredentials();
     void rememberSessionRoundTrip();
@@ -250,7 +251,7 @@ void DatabaseManagerTest::initializesDefaultUserAndLayout()
              QStringLiteral("admin"));
     QCOMPARE(scalarValue(m_databasePath,
                          QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
-             1);
+             2);
 }
 
 void DatabaseManagerTest::createsMissingDatabase()
@@ -393,7 +394,7 @@ void DatabaseManagerTest::migratesLegacySchemaSuccessfully()
              QStringLiteral("user"));
     QCOMPARE(scalarValue(m_databasePath,
                          QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
-             1);
+             2);
     QCOMPARE(scalarValue(m_databasePath,
                          QStringLiteral("SELECT COUNT(*) FROM users WHERE username='legacy-user'"))
                  .toInt(),
@@ -469,7 +470,7 @@ void DatabaseManagerTest::importsLegacyDatabaseAndKeepsOriginal()
              1);
     QCOMPARE(scalarValue(m_databasePath,
                          QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
-             1);
+             2);
 }
 
 void DatabaseManagerTest::rejectsNewAndLegacyDatabaseConflict()
@@ -511,6 +512,65 @@ void DatabaseManagerTest::createsBackupBeforeMigration()
     QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
     QCOMPARE(backupCount(&errorMessage), 1);
     QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+}
+
+void DatabaseManagerTest::migratesAuthSchemaWithBackup()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_databasePath,
+                 {
+                     QStringLiteral(
+                         "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, "
+                         "description TEXT NOT NULL, applied_at TEXT NOT NULL)"),
+                     QStringLiteral(
+                         "INSERT INTO schema_version "
+                         "(version, description, applied_at) VALUES (1, 'baseline', 'now')"),
+                     QStringLiteral(
+                         "CREATE TABLE users ("
+                         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                         "username TEXT NOT NULL UNIQUE,"
+                         "password_hash TEXT NOT NULL,"
+                         "salt TEXT NOT NULL,"
+                         "role TEXT NOT NULL DEFAULT 'user',"
+                         "created_at TEXT NOT NULL)"),
+                     QStringLiteral(
+                         "INSERT INTO users "
+                         "(username, password_hash, salt, role, created_at) "
+                         "VALUES ('legacy-user', 'hash', 'salt', 'operator', "
+                         "'2026-09-20T10:00:00.000Z')"),
+                 },
+                 &errorMessage),
+             qPrintable(errorMessage));
+
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+    QCOMPARE(scalarValue(m_databasePath,
+                         QStringLiteral("SELECT MAX(version) FROM schema_version")).toInt(),
+             2);
+    QCOMPARE(backupCount(&errorMessage), 1);
+    QVERIFY2(errorMessage.isEmpty(), qPrintable(errorMessage));
+    QCOMPARE(scalarValue(
+                 m_databasePath,
+                 QStringLiteral("SELECT display_name FROM users WHERE username='legacy-user'"))
+                 .toString(),
+             QStringLiteral("legacy-user"));
+    QCOMPARE(scalarValue(
+                 m_databasePath,
+                 QStringLiteral("SELECT password_scheme FROM users WHERE username='legacy-user'"))
+                 .toString(),
+             QStringLiteral("legacy_sha256"));
+    QVERIFY2(objectExists(m_databasePath, QStringLiteral("table"),
+                          QStringLiteral("roles"), &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(objectExists(m_databasePath, QStringLiteral("table"),
+                          QStringLiteral("role_permissions"), &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(objectExists(m_databasePath, QStringLiteral("table"),
+                          QStringLiteral("role_assignments"), &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(objectExists(m_databasePath, QStringLiteral("table"),
+                          QStringLiteral("audit_logs"), &errorMessage),
+             qPrintable(errorMessage));
 }
 
 void DatabaseManagerTest::rejectsInvalidCredentials()
