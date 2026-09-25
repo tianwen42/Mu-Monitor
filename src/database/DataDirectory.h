@@ -21,7 +21,7 @@ public:
         QString exports;
         QString runtime;
         QString config;
-        QString legacyDatabase;
+        QStringList legacyDatabases;
         Source source = Source::AppLocalData;
     };
 
@@ -34,6 +34,5 @@ public:
 
 private:
     static bool makePaths(const QString &root, Source source,
-                          const QString &legacyDatabase,
                           Paths *paths, QString *errorMessage);
 };

@@ -39,7 +39,8 @@ private slots:
     void migratesLegacySchemaSuccessfully();
     void rollsBackFailedMigration();
     void importsLegacyDatabaseAndKeepsOriginal();
-    void rejectsNewAndLegacyDatabaseConflict();
+    void importsPortableLegacyDatabaseWhenActiveMissing();
+    void prefersActiveDatabaseWhenLegacyAlsoExists();
     void createsBackupBeforeMigration();
     void migratesAuthSchemaWithBackup();
 
@@ -63,6 +64,7 @@ private:
     QString m_dataDirectory;
     QString m_databasePath;
     QString m_legacyDatabase;
+    QString m_portableLegacyDatabase;
 };
 
 void DatabaseManagerTest::initTestCase()
@@ -82,13 +84,16 @@ void DatabaseManagerTest::init()
         {QCoreApplication::applicationFilePath()},
         QCoreApplication::applicationDirPath(), &resolveError);
     QVERIFY2(resolveError.isEmpty(), qPrintable(resolveError));
-    m_legacyDatabase = defaultPaths.legacyDatabase;
+    m_legacyDatabase = defaultPaths.legacyDatabases.isEmpty()
+        ? QString()
+        : defaultPaths.legacyDatabases.constLast();
     removeLegacyTestDirectory();
 
     m_temporaryDirectory = std::make_unique<QTemporaryDir>();
     QVERIFY(m_temporaryDirectory->isValid());
     m_dataDirectory = QDir(m_temporaryDirectory->path()).filePath(QStringLiteral("data"));
     m_databasePath = QDir(m_dataDirectory).filePath(QStringLiteral("database/mu-monitor.db"));
+    m_portableLegacyDatabase = QDir(m_dataDirectory).filePath(QStringLiteral("mu-monitor.db"));
     qputenv("MU_MONITOR_DATA_DIR", m_dataDirectory.toUtf8());
 }
 
@@ -473,7 +478,37 @@ void DatabaseManagerTest::importsLegacyDatabaseAndKeepsOriginal()
              2);
 }
 
-void DatabaseManagerTest::rejectsNewAndLegacyDatabaseConflict()
+void DatabaseManagerTest::importsPortableLegacyDatabaseWhenActiveMissing()
+{
+    QString errorMessage;
+    QVERIFY2(createSqliteDatabase(
+                 m_portableLegacyDatabase,
+                 {
+                     QStringLiteral(
+                         "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, "
+                         "password_hash TEXT, salt TEXT, role TEXT, created_at TEXT)"),
+                     QStringLiteral(
+                         "INSERT INTO users "
+                         "(id, username, password_hash, salt, role, created_at) "
+                         "VALUES (1, 'portable-user', 'hash', 'salt', 'user', "
+                         "'2026-01-01T00:00:00.000Z')"),
+                 },
+                 &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY(QFileInfo::exists(m_portableLegacyDatabase));
+    QVERIFY(!QFileInfo::exists(m_databasePath));
+
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
+    QVERIFY(QFileInfo::exists(m_databasePath));
+    QVERIFY(QFileInfo::exists(m_portableLegacyDatabase));
+    QCOMPARE(scalarValue(
+                 m_databasePath,
+                 QStringLiteral("SELECT COUNT(*) FROM users WHERE username='portable-user'"))
+                 .toInt(),
+             1);
+}
+
+void DatabaseManagerTest::prefersActiveDatabaseWhenLegacyAlsoExists()
 {
     QString errorMessage;
     QVERIFY2(createSqliteDatabase(
@@ -489,14 +524,18 @@ void DatabaseManagerTest::rejectsNewAndLegacyDatabaseConflict()
                  &errorMessage),
              qPrintable(errorMessage));
 
-    QVERIFY2(!initialize(&errorMessage), "新旧数据库同时存在时必须报冲突");
-    QVERIFY(errorMessage.contains(QStringLiteral("新旧数据库同时存在")));
+    QVERIFY2(initialize(&errorMessage), qPrintable(errorMessage));
     QCOMPARE(scalarValue(m_databasePath,
                          QStringLiteral("SELECT value FROM new_marker")).toString(),
              QStringLiteral("new"));
     QCOMPARE(scalarValue(m_legacyDatabase,
                          QStringLiteral("SELECT value FROM old_marker")).toString(),
              QStringLiteral("old"));
+
+    QString inspectionError;
+    QVERIFY(!objectExists(m_databasePath, QStringLiteral("table"),
+                          QStringLiteral("old_marker"), &inspectionError));
+    QVERIFY2(inspectionError.isEmpty(), qPrintable(inspectionError));
 }
 
 void DatabaseManagerTest::createsBackupBeforeMigration()

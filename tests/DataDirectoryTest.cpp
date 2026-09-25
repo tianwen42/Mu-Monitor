@@ -134,6 +134,12 @@ void DataDirectoryTest::portableFlagUsesExecutableDataDirectory()
     QCOMPARE(paths.source, DataDirectory::Source::Portable);
     QCOMPARE(paths.root,
              QDir::cleanPath(QDir(applicationDirectory.path()).filePath(QStringLiteral("data"))));
+    QVERIFY(!paths.legacyDatabases.isEmpty());
+    QCOMPARE(paths.legacyDatabases.constFirst(),
+             QDir(paths.root).filePath(QStringLiteral("mu-monitor.db")));
+    QVERIFY(paths.legacyDatabases.contains(
+        QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+            .filePath(QStringLiteral("mu-monitor.db"))));
 }
 
 void DataDirectoryTest::fallsBackToAppLocalDataLocation()
@@ -153,9 +159,9 @@ void DataDirectoryTest::fallsBackToAppLocalDataLocation()
     QCOMPARE(paths.root,
              QDir::cleanPath(QStandardPaths::writableLocation(
                  QStandardPaths::AppLocalDataLocation)));
-    QCOMPARE(paths.legacyDatabase,
-             QDir::cleanPath(QDir(QStandardPaths::writableLocation(
-                 QStandardPaths::AppDataLocation)).filePath(QStringLiteral("mu-monitor.db"))));
+    QVERIFY(paths.legacyDatabases.contains(
+        QDir::cleanPath(QDir(QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation)).filePath(QStringLiteral("mu-monitor.db")))));
 }
 
 void DataDirectoryTest::rejectsRelativeExplicitPath()

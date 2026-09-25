@@ -107,22 +107,39 @@ bool DatabaseManager::initialize(QString *errorMessage)
     }
 
     const bool databaseExistsBeforeOpen = QFileInfo::exists(m_databasePath);
-    const bool legacyExists = !paths.legacyDatabase.isEmpty()
-        && QFileInfo::exists(paths.legacyDatabase);
 
-    if (databaseExistsBeforeOpen && legacyExists) {
-        return fail(QStringLiteral(
-            "新旧数据库同时存在，拒绝静默选择或自动合并。新数据库：%1；旧数据库：%2")
-                        .arg(m_databasePath, paths.legacyDatabase));
-    }
-
-    if (!databaseExistsBeforeOpen && legacyExists) {
-        if (!validateSqliteDatabase(paths.legacyDatabase, QStringLiteral("旧数据库"),
-                                    errorMessage)) {
-            return false;
+    // 目标数据库优先。旧目录即使仍有副本，也不能阻止程序接入当前数据库。
+    // 只有目标数据库不存在时，才按 DataDirectory 给出的顺序选择一个可用旧库副本。
+    if (!databaseExistsBeforeOpen) {
+        QStringList existingLegacyDatabases;
+        for (const QString &legacyPath : paths.legacyDatabases) {
+            if (QFileInfo(legacyPath).isFile()) {
+                existingLegacyDatabases.append(legacyPath);
+            }
         }
-        if (!importLegacyDatabase(paths.legacyDatabase, m_databasePath, errorMessage)) {
-            return false;
+
+        if (!existingLegacyDatabases.isEmpty()) {
+            bool imported = false;
+            QStringList validationErrors;
+            for (const QString &legacyPath : existingLegacyDatabases) {
+                QString validationError;
+                if (!validateSqliteDatabase(
+                        legacyPath, QStringLiteral("旧数据库"), &validationError)) {
+                    validationErrors.append(
+                        QStringLiteral("%1：%2").arg(legacyPath, validationError));
+                    continue;
+                }
+                if (!importLegacyDatabase(legacyPath, m_databasePath, errorMessage)) {
+                    return false;
+                }
+                imported = true;
+                break;
+            }
+
+            if (!imported) {
+                return fail(QStringLiteral("检测到旧数据库，但没有可用于接入的有效数据库：%1")
+                                .arg(validationErrors.join(QStringLiteral("；"))));
+            }
         }
     }
 

@@ -274,7 +274,8 @@ Windows 标准模式：
 - 在迁移前创建备份
 - 保护损坏数据库，不自动覆盖或删除
 
-旧版 `%APPDATA%` 数据库会在新位置为空时校验并复制迁移，原文件保留。
+目标位置的 `database/mu-monitor.db` 存在时直接接入，不会因为其他位置仍有旧数据库而拒绝启动。
+目标位置为空时，程序会依次检查数据根目录下的 `mu-monitor.db` 和旧版 `%APPDATA%\Mu-Monitor\Mu-Monitor\mu-monitor.db`，校验后复制接入，原文件保留。
 
 ## 用户与安全
 

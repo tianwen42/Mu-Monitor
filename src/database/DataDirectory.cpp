@@ -76,7 +76,7 @@ DataDirectory::Paths DataDirectory::resolve(
         }
         Paths paths;
         const QString root = cleanAbsolutePath(commandLinePath);
-        if (!makePaths(root, Source::CommandLine, QString(), &paths, errorMessage)) {
+        if (!makePaths(root, Source::CommandLine, &paths, errorMessage)) {
             return {};
         }
         return paths;
@@ -90,7 +90,7 @@ DataDirectory::Paths DataDirectory::resolve(
         }
         Paths paths;
         const QString root = cleanAbsolutePath(environmentPath);
-        if (!makePaths(root, Source::Environment, QString(), &paths, errorMessage)) {
+        if (!makePaths(root, Source::Environment, &paths, errorMessage)) {
             return {};
         }
         return paths;
@@ -101,7 +101,7 @@ DataDirectory::Paths DataDirectory::resolve(
         Paths paths;
         const QString root = cleanAbsolutePath(
             QDir(applicationDirectory).filePath(QStringLiteral("data")));
-        if (!makePaths(root, Source::Portable, QString(), &paths, errorMessage)) {
+        if (!makePaths(root, Source::Portable, &paths, errorMessage)) {
             return {};
         }
         return paths;
@@ -114,7 +114,7 @@ DataDirectory::Paths DataDirectory::resolve(
     }
 
     Paths paths;
-    if (!makePaths(cleanAbsolutePath(root), Source::AppLocalData, QString(), &paths,
+    if (!makePaths(cleanAbsolutePath(root), Source::AppLocalData, &paths,
                    errorMessage)) {
         return {};
     }
@@ -181,7 +181,6 @@ QString DataDirectory::sourceName(Source source)
 }
 
 bool DataDirectory::makePaths(const QString &root, Source source,
-                              const QString &legacyDatabase,
                               Paths *paths, QString *errorMessage)
 {
     if (!paths) {
@@ -201,17 +200,31 @@ bool DataDirectory::makePaths(const QString &root, Source source,
     paths->config = rootDirectory.filePath(QStringLiteral("config"));
     paths->source = source;
 
-    QString legacy = legacyDatabase;
-    if (legacy.isEmpty()) {
-        const QString legacyRoot =
-            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        if (!legacyRoot.isEmpty()) {
-            legacy = QDir(legacyRoot).filePath(QStringLiteral("mu-monitor.db"));
+    const QString activeDatabase =
+        rootDirectory.filePath(QStringLiteral("database/mu-monitor.db"));
+    const QString portableLegacy = rootDirectory.filePath(QStringLiteral("mu-monitor.db"));
+    const QString appDataRoot =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString appDataLegacy = appDataRoot.isEmpty()
+        ? QString()
+        : QDir(appDataRoot).filePath(QStringLiteral("mu-monitor.db"));
+
+    const QStringList candidates = {portableLegacy, appDataLegacy};
+    for (const QString &candidate : candidates) {
+        if (candidate.isEmpty() || samePath(candidate, activeDatabase)) {
+            continue;
         }
-    }
-    const QString newDatabase = rootDirectory.filePath(QStringLiteral("database/mu-monitor.db"));
-    if (!legacy.isEmpty() && !samePath(legacy, newDatabase)) {
-        paths->legacyDatabase = cleanAbsolutePath(legacy);
+        const QString cleaned = cleanAbsolutePath(candidate);
+        bool duplicate = false;
+        for (const QString &existing : paths->legacyDatabases) {
+            if (samePath(existing, cleaned)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            paths->legacyDatabases.append(cleaned);
+        }
     }
     return true;
 }
