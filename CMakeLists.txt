@@ -118,6 +118,10 @@ qt_add_executable(Mu-Monitor
     src/app/AppController.h
     src/app/MonitoringService.cpp
     src/app/MonitoringService.h
+    src/config/DataSourceConfig.cpp
+    src/config/DataSourceConfig.h
+    src/network/DeviceDataSourceFactory.cpp
+    src/network/DeviceDataSourceFactory.h
     src/network/IDeviceDataSource.h
     src/network/SimulationDataSource.cpp
     src/network/SimulationDataSource.h
