@@ -33,7 +33,7 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 - SQLite 历史数据查询
 - 顶部告警中心 Tab，点击告警可定位对应设备
 - 独立 DeviceSimulator（TCP Server、4 台模拟设备、故障场景）
-- QSS 深色工业主题
+- QSS 浅色工业主题
 - CMake 构建和 MinGW 部署
 
 ## Excel 数据导出
@@ -106,7 +106,9 @@ Windows 默认数据库位置：
 
 已有数据库会直接复用。初始化前会检查写权限和 SQLite `quick_check`，启用 WAL、`busy_timeout` 和外键约束。结构升级使用 `schema_version` 事务迁移，并在迁移前把备份写入 `database/backups`。
 
-旧版 `%APPDATA%\Mu-Monitor\Mu-Monitor\mu-monitor.db` 会在新位置没有数据库时先校验并复制迁移，旧文件保留。新旧数据库同时存在时会报冲突，不会静默选择或自动合并。
+数据库默认位于 `AppLocalDataLocation` 的 `database/mu-monitor.db`。程序目录存在 `portable.flag` 时，使用程序目录下的 `data/database/mu-monitor.db`。也可以通过 `--data-dir` 或 `MU_MONITOR_DATA_DIR` 显式指定数据目录。
+
+旧版 `%APPDATA%\Mu-Monitor\Mu-Monitor\mu-monitor.db` 会在新位置没有数据库时先校验并复制迁移，旧文件保留。新旧数据库同时存在时会报冲突，不会静默选择或自动合并。重新发布时，`data`、`backups` 和 `logs` 目录不会被发布脚本清理。
 
 密码不会以明文保存，数据库中使用带随机盐、10 万轮迭代的 SHA-256 哈希。
 
@@ -319,6 +321,14 @@ git commit -m "feat: describe the change"
 2026-10-15 项目交付计划见：
 
 [docs/DELIVERY_PLAN.md](docs/DELIVERY_PLAN.md)
+
+技术学习路线见：
+
+[docs/LEARNING_PATH.md](docs/LEARNING_PATH.md)
+
+当前学习进度见：
+
+[docs/LEARNING_PROGRESS.md](docs/LEARNING_PROGRESS.md)
 
 ## 许可证
 
