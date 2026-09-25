@@ -301,3 +301,24 @@ target_link_libraries(UserManagementTest PRIVATE
     Qt::Test
     mu_auth
 )
+
+mu_add_test(TelemetryRepositoryTest
+    TelemetryRepositoryTest.cpp
+    ../src/core/BusinessStates.cpp
+    ../src/core/BusinessStates.h
+    ../src/database/DataDirectory.cpp
+    ../src/database/DataDirectory.h
+    ../src/database/DatabaseManager.cpp
+    ../src/database/DatabaseManager.h
+    ../src/database/TelemetryRepository.h
+    ../src/database/SqliteTelemetryRepository.cpp
+    ../src/database/SqliteTelemetryRepository.h
+    ../src/utils/TimeUtils.cpp
+    ../src/utils/TimeUtils.h
+)
+target_link_libraries(TelemetryRepositoryTest PRIVATE
+    Qt::Core
+    Qt::Sql
+    Qt::Test
+)
+set_tests_properties(TelemetryRepositoryTest PROPERTIES TIMEOUT 120)
