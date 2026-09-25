@@ -1,6 +1,14 @@
 #include "app/AppController.h"
 #include "database/DatabaseManager.h"
 #include "network/SimulationDataSource.h"
+#include "auth/AuditRepository.h"
+#include "auth/AuthTypes.h"
+#include "auth/PasswordService.h"
+#include "auth/UserManagementService.h"
+#include "database/DatabaseManager.h"
+#include "database/PasswordRepository.h"
+#include "database/UserRepository.h"
+#include "ui/SettingsDialog.h"
 #include "ui/mainwindow.h"
 
 #include <QApplication>
@@ -9,12 +17,16 @@
 #include <QBoxLayout>
 #include <QGridLayout>
 #include <QIcon>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QPixmap>
 #include <QPointer>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QtTest>
+
+#include <memory>
 
 class MainWindowResponsiveTest : public QObject
 {
@@ -26,6 +38,10 @@ private slots:
     void reflowsOverviewAtCompactWidth();
     void stopsDevicesIndependently();
     void destroyingWindowStopsController();
+    void settingsDialogShowsUserManagementPermissionsAndDatabasePath();
+
+private:
+    std::unique_ptr<QTemporaryDir> m_tempDirectory;
 };
 
 void MainWindowResponsiveTest::initTestCase()
@@ -34,11 +50,10 @@ void MainWindowResponsiveTest::initTestCase()
     QCoreApplication::setOrganizationName(QStringLiteral("Mu-MonitorTests"));
     QCoreApplication::setApplicationName(QStringLiteral("Mu-MonitorResponsiveTest"));
 
-    const QString dataDirectory =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QVERIFY(!dataDirectory.isEmpty());
-    QDir(dataDirectory).removeRecursively();
-    QVERIFY(QDir().mkpath(dataDirectory));
+    m_tempDirectory = std::make_unique<QTemporaryDir>(
+        QDir::tempPath() + QStringLiteral("/Mu-MonitorResponsiveTest-XXXXXX"));
+    QVERIFY(m_tempDirectory->isValid());
+    qputenv("MU_MONITOR_DATA_DIR", m_tempDirectory->path().toUtf8());
 
     QString errorMessage;
     QVERIFY2(DatabaseManager::instance().initialize(&errorMessage),
@@ -54,6 +69,8 @@ void MainWindowResponsiveTest::initTestCase()
 void MainWindowResponsiveTest::cleanupTestCase()
 {
     DatabaseManager::instance().shutdown();
+    qunsetenv("MU_MONITOR_DATA_DIR");
+    m_tempDirectory.reset();
 }
 
 void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
@@ -169,6 +186,71 @@ void MainWindowResponsiveTest::destroyingWindowStopsController()
 
     QVERIFY(!source->isRunning());
     delete source;
+}
+
+
+void MainWindowResponsiveTest::settingsDialogShowsUserManagementPermissionsAndDatabasePath()
+{
+    qApp->setProperty(Auth::CurrentUserProperty, QStringLiteral("admin"));
+
+    SettingsDialog adminDialog;
+    auto *adminPathEdit =
+        adminDialog.findChild<QLineEdit *>(QStringLiteral("databasePathLineEdit"));
+    auto *adminUserManagementButton =
+        adminDialog.findChild<QPushButton *>(QStringLiteral("openUserManagementButton"));
+    auto *adminPasswordButton =
+        adminDialog.findChild<QPushButton *>(QStringLiteral("changeOwnPasswordButton"));
+    QVERIFY(adminPathEdit);
+    QCOMPARE(adminPathEdit->text(), DatabaseManager::instance().databasePath());
+    QVERIFY(adminUserManagementButton);
+    QVERIFY(adminUserManagementButton->isEnabled());
+    QVERIFY(adminPasswordButton);
+    QVERIFY(adminPasswordButton->isEnabled());
+
+    UserRepository users;
+    PasswordRepository passwords;
+    PasswordService passwordService;
+    AuditRepository audit;
+    UserManagementService service(users, passwords, passwordService, audit,
+                                  QStringLiteral("admin"));
+
+    QString errorMessage;
+    QVERIFY2(service.createUser(QStringLiteral("ui_operator"),
+                               QStringLiteral("UI Operator"),
+                               QStringLiteral("operator"),
+                               QStringLiteral("Operator123"),
+                               true, nullptr, &errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(service.createUser(QStringLiteral("ui_viewer"),
+                               QStringLiteral("UI Viewer"),
+                               QStringLiteral("viewer"),
+                               QStringLiteral("Viewer123"),
+                               true, nullptr, &errorMessage),
+             qPrintable(errorMessage));
+
+    qApp->setProperty(Auth::CurrentUserProperty, QStringLiteral("ui_operator"));
+    SettingsDialog operatorDialog;
+    auto *operatorUserManagementButton =
+        operatorDialog.findChild<QPushButton *>(QStringLiteral("openUserManagementButton"));
+    auto *operatorPasswordButton =
+        operatorDialog.findChild<QPushButton *>(QStringLiteral("changeOwnPasswordButton"));
+    QVERIFY(operatorUserManagementButton);
+    QVERIFY(!operatorUserManagementButton->isEnabled());
+    QVERIFY(operatorPasswordButton);
+    QVERIFY(operatorPasswordButton->isEnabled());
+
+    qApp->setProperty(Auth::CurrentUserProperty, QStringLiteral("ui_viewer"));
+    SettingsDialog viewerDialog;
+    auto *viewerUserManagementButton =
+        viewerDialog.findChild<QPushButton *>(QStringLiteral("openUserManagementButton"));
+    auto *viewerPasswordButton =
+        viewerDialog.findChild<QPushButton *>(QStringLiteral("changeOwnPasswordButton"));
+    QVERIFY(viewerUserManagementButton);
+    QVERIFY(!viewerUserManagementButton->isEnabled());
+    QVERIFY(viewerPasswordButton);
+    QVERIFY(viewerPasswordButton->isEnabled());
+
+    qApp->setProperty(Auth::CurrentUserProperty, QStringLiteral("admin"));
 }
 QTEST_MAIN(MainWindowResponsiveTest)
 

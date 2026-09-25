@@ -6,6 +6,8 @@
 
 namespace Auth {
 
+inline constexpr const char *CurrentUserProperty = "mu.currentUser";
+
 constexpr int kPbkdf2Iterations = 120000;
 constexpr int kPbkdf2KeyLength = 32;
 constexpr int kLegacyIterations = 100000;

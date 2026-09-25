@@ -233,6 +233,8 @@ mu_add_test(ApplicationLayerTest
     ../src/core/TelemetryRecord.h
     ../src/core/TelemetrySample.cpp
     ../src/core/TelemetrySample.h
+    ../src/database/DataDirectory.cpp
+    ../src/database/DataDirectory.h
     ../src/database/DatabaseManager.cpp
     ../src/database/DatabaseManager.h
     ../src/network/IDeviceDataSource.h

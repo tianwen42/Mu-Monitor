@@ -1,4 +1,5 @@
 #include "app/AppController.h"
+#include "auth/AuthTypes.h"
 #include "database/DatabaseManager.h"
 #include "network/SimulationDataSource.h"
 #include "ui/LoginDialog.h"
@@ -93,6 +94,8 @@ int main(int argc, char *argv[])
         }
         currentUser = loginDialog.username();
     }
+
+    a.setProperty(Auth::CurrentUserProperty, currentUser);
 
     DatabaseManager::instance().insertLog(
         QStringLiteral("INFO"), QStringLiteral("application"),

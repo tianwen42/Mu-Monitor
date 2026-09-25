@@ -1,6 +1,9 @@
 #include "ui/SettingsDialog.h"
 
+#include "auth/AuthTypes.h"
 #include "database/DatabaseManager.h"
+#include "database/UserRepository.h"
+#include "ui/UserManagementDialog.h"
 #include "utils/ExcelExporter.h"
 #include "utils/TimeUtils.h"
 
@@ -168,6 +171,7 @@ void SettingsDialog::setupPages()
             + QStringLiteral("/database/mu-monitor.db");
     }
     auto *databasePathEdit = new QLineEdit(defaultDbPath);
+    databasePathEdit->setObjectName(QStringLiteral("databasePathLineEdit"));
     auto *browseButton = new QPushButton(QStringLiteral("浏览..."));
     auto *retentionSpin = new QSpinBox;
     retentionSpin->setRange(1, 3650);
@@ -188,6 +192,76 @@ void SettingsDialog::setupPages()
     storageForm->addRow(QString(), autoCleanupCheck);
     disableUntilImplemented({databasePathEdit, browseButton, retentionSpin, autoCleanupCheck});
     addPage(QStringLiteral("数据存储"), appStyle->standardIcon(QStyle::SP_DriveHDIcon), storagePage);
+    QWidget *accountPage = new QWidget;
+    auto *accountLayout = new QVBoxLayout(accountPage);
+    accountLayout->setContentsMargins(24, 24, 24, 24);
+    accountLayout->setSpacing(12);
+
+    const QString actorUsername = qApp
+        ? qApp->property(Auth::CurrentUserProperty).toString().trimmed()
+        : QString();
+    UserRepository userRepository;
+    Auth::UserRecord actor;
+    QString accountError;
+    const bool actorLoaded = !actorUsername.isEmpty()
+        && userRepository.findByUsername(actorUsername, &actor, &accountError);
+    const QString role = actorLoaded && Auth::isValidRole(actor.role)
+        ? actor.role
+        : QStringLiteral("viewer");
+    const bool canManageUsers = actorLoaded
+        && Auth::hasPermission(role, Auth::Permission::ManageUsers);
+
+    auto *accountSummary = new QLabel(
+        actorLoaded
+            ? QStringLiteral("当前账号：%1（%2）")
+                  .arg(actorUsername, Auth::roleDisplayName(role))
+            : QStringLiteral("当前账号：未识别。请重新登录后再管理用户。"),
+        accountPage);
+    accountSummary->setObjectName(QStringLiteral("accountSummaryLabel"));
+    accountSummary->setWordWrap(true);
+    accountLayout->addWidget(accountSummary);
+
+    auto *permissionHint = new QLabel(
+        canManageUsers
+            ? QStringLiteral("当前角色可管理用户、角色和密码重置。")
+            : actorLoaded
+                ? QStringLiteral("当前角色不能管理用户，但可以修改本人密码。")
+                : QStringLiteral("无法确定当前用户权限。"),
+        accountPage);
+    permissionHint->setObjectName(QStringLiteral("accountPermissionHint"));
+    permissionHint->setWordWrap(true);
+    accountLayout->addWidget(permissionHint);
+
+    auto *openUserManagementButton = new QPushButton(QStringLiteral("打开用户管理"), accountPage);
+    openUserManagementButton->setObjectName(QStringLiteral("openUserManagementButton"));
+    openUserManagementButton->setEnabled(canManageUsers);
+    openUserManagementButton->setToolTip(
+        canManageUsers
+            ? QStringLiteral("管理用户、角色、启用状态和密码重置。")
+            : QStringLiteral("仅管理员可以打开用户管理。"));
+    connect(openUserManagementButton, &QPushButton::clicked, this,
+            [this, actorUsername]() {
+                UserManagementDialog dialog(
+                    actorUsername, UserManagementDialog::Mode::Management, this);
+                dialog.exec();
+            });
+
+    auto *changeOwnPasswordButton = new QPushButton(
+        QStringLiteral("修改我的密码"), accountPage);
+    changeOwnPasswordButton->setObjectName(QStringLiteral("changeOwnPasswordButton"));
+    changeOwnPasswordButton->setEnabled(actorLoaded);
+    connect(changeOwnPasswordButton, &QPushButton::clicked, this,
+            [this, actorUsername]() {
+                UserManagementDialog dialog(
+                    actorUsername, UserManagementDialog::Mode::PasswordOnly, this);
+                dialog.exec();
+            });
+
+    accountLayout->addWidget(openUserManagementButton, 0, Qt::AlignLeft);
+    accountLayout->addWidget(changeOwnPasswordButton, 0, Qt::AlignLeft);
+    accountLayout->addStretch();
+    addPage(QStringLiteral("用户与权限"),
+            appStyle->standardIcon(QStyle::SP_FileDialogListView), accountPage);
 
     QWidget *alarmPage = createFormPage();
     auto *alarmForm = qobject_cast<QFormLayout *>(alarmPage->layout());
