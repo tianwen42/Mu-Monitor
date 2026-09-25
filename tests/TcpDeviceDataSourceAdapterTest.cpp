@@ -92,6 +92,7 @@ private slots:
     void mapsHeartbeatFrame();
     void mapsTcpConnectionStates();
     void filtersOfflineUnknownAndDisabledFrames();
+    void discoversUnknownDevicesWhenNoAllowlist();
     void stopsAndIgnoresRepeatedStart();
     void aggregatesErrors();
 };
@@ -178,6 +179,41 @@ void TcpDeviceDataSourceAdapterTest::mapsTcpConnectionStates()
     adapter.stop();
 }
 
+void TcpDeviceDataSourceAdapterTest::discoversUnknownDevicesWhenNoAllowlist()
+{
+    TcpDeviceDataSourceAdapter adapter;
+    QVERIFY(adapter.discoversDevicesDynamically());
+
+    QTcpServer server;
+    startAdapter(adapter, server);
+
+    QList<DeviceInfo> discovered;
+    QList<TelemetrySample> samples;
+    connect(&adapter, &IDeviceDataSource::deviceDiscovered,
+            this, [&discovered](const DeviceInfo &device) { discovered.append(device); });
+    connect(&adapter, &IDeviceDataSource::telemetryGenerated,
+            this, [&samples](const QList<TelemetrySample> &batch) { samples = batch; });
+
+    emit adapter.tcpDeviceDataSource()->frameReceived(
+        makeTelemetryFrame(QStringLiteral("DEV-009"), 1));
+    QCOMPARE(discovered.size(), 1);
+    QCOMPARE(discovered.constFirst().deviceId, QStringLiteral("DEV-009"));
+    QCOMPARE(adapter.devices().size(), 1);
+    QCOMPARE(samples.size(), 1);
+    QCOMPARE(samples.constFirst().deviceId, QStringLiteral("DEV-009"));
+
+    emit adapter.tcpDeviceDataSource()->frameReceived(
+        makeTelemetryFrame(QStringLiteral("DEV-009"), 2));
+    QCOMPARE(discovered.size(), 1);
+    QCOMPARE(adapter.devices().size(), 1);
+
+    emit adapter.tcpDeviceDataSource()->frameReceived(
+        makeTelemetryFrame(QStringLiteral("DEV-010"), 3));
+    QCOMPARE(discovered.size(), 2);
+    QCOMPARE(adapter.devices().size(), 2);
+    QCOMPARE(samples.constFirst().deviceId, QStringLiteral("DEV-010"));
+    adapter.stop();
+}
 void TcpDeviceDataSourceAdapterTest::filtersOfflineUnknownAndDisabledFrames()
 {
     TcpDeviceDataSourceAdapter adapter;

@@ -38,6 +38,10 @@ AppController::AppController(IDeviceDataSource *dataSource,
     , m_currentUser(currentUser)
 {
     m_monitoringService = new MonitoringService(m_dataSource, this);
+    if (m_dataSource) {
+        connect(m_dataSource, &IDeviceDataSource::deviceDiscovered,
+                this, &AppController::handleDeviceDiscovered);
+    }
 
     if (m_repository) {
         m_persistenceQueueCapacity = m_repository->options().queueCapacity;
@@ -398,17 +402,19 @@ void AppController::logEvent(const QString &level, const QString &source,
 void AppController::loadDevices()
 {
     QList<DeviceInfo> defaults;
-    defaults.reserve(100);
-    for (int i = 1; i <= 100; ++i) {
-        DeviceInfo device;
-        device.deviceId = QStringLiteral("DEV-%1").arg(i, 3, 10, QLatin1Char('0'));
-        device.name = QStringLiteral("模拟设备 %1").arg(i, 3, 10, QLatin1Char('0'));
-        device.model = QStringLiteral("MU-%1").arg(i, 3, 10, QLatin1Char('0'));
-        device.location = QStringLiteral("产线 %1").arg(((i - 1) / 10) + 1);
-        device.protocol = (i % 2 == 0)
-            ? QStringLiteral("Modbus TCP")
-            : QStringLiteral("TCP");
-        defaults.append(device);
+    if (!m_dataSource || !m_dataSource->discoversDevicesDynamically()) {
+        defaults.reserve(100);
+        for (int i = 1; i <= 100; ++i) {
+            DeviceInfo device;
+            device.deviceId = QStringLiteral("DEV-%1").arg(i, 3, 10, QLatin1Char('0'));
+            device.name = QStringLiteral("模拟设备 %1").arg(i, 3, 10, QLatin1Char('0'));
+            device.model = QStringLiteral("MU-%1").arg(i, 3, 10, QLatin1Char('0'));
+            device.location = QStringLiteral("产线 %1").arg(((i - 1) / 10) + 1);
+            device.protocol = (i % 2 == 0)
+                ? QStringLiteral("Modbus TCP")
+                : QStringLiteral("TCP");
+            defaults.append(device);
+        }
     }
 
     QString errorMessage;
@@ -435,6 +441,27 @@ void AppController::loadDevices()
     }
 
     m_monitoringService->setDevices(m_devices);
+    emit devicesChanged(m_devices);
+}
+
+void AppController::handleDeviceDiscovered(const DeviceInfo &device)
+{
+    const QString deviceId = device.deviceId.trimmed();
+    if (deviceId.isEmpty()) {
+        return;
+    }
+    for (const DeviceInfo &existing : m_devices) {
+        if (existing.deviceId == deviceId) {
+            return;
+        }
+    }
+
+    DeviceInfo discovered = device;
+    discovered.deviceId = deviceId;
+    m_devices.append(discovered);
+    if (m_monitoringService) {
+        m_monitoringService->registerDevice(discovered);
+    }
     emit devicesChanged(m_devices);
 }
 

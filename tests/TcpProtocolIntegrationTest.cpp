@@ -1,6 +1,7 @@
 #include "DeviceSimulatorServer.h"
 
 #include <network/TcpDeviceDataSource.h>
+#include <network/TcpDeviceDataSourceAdapter.h>
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -13,6 +14,7 @@ class TcpProtocolIntegrationTest : public QObject
 
 private slots:
     void receivesLiveProtocolFrames();
+    void adapterDiscoversFourSimulatorDevices();
     void isolatesBadCrcFrameAndKeepsReceiving();
     void recoversAfterSimulatorDisconnectsClient();
 };
@@ -50,6 +52,32 @@ void TcpProtocolIntegrationTest::receivesLiveProtocolFrames()
 
     source.disconnectFromDevice();
     QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Disconnected, 1000);
+}
+
+void TcpProtocolIntegrationTest::adapterDiscoversFourSimulatorDevices()
+{
+    DeviceSimulatorServer server;
+    server.setSendIntervalMs(30);
+    QString errorMessage;
+    QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
+             qPrintable(errorMessage));
+
+    TcpDeviceDataSourceAdapter adapter;
+    QVERIFY(adapter.discoversDevicesDynamically());
+    adapter.setEndpoint(QStringLiteral("127.0.0.1"), server.serverPort());
+    QSignalSpy discoverySpy(&adapter, &IDeviceDataSource::deviceDiscovered);
+    QVERIFY(adapter.start());
+    QTRY_VERIFY_WITH_TIMEOUT(discoverySpy.count() >= 4, 2500);
+
+    QSet<QString> deviceIds;
+    for (const DeviceInfo &device : adapter.devices()) {
+        deviceIds.insert(device.deviceId);
+    }
+    QCOMPARE(deviceIds.size(), 4);
+    QVERIFY(deviceIds.contains(QStringLiteral("DEV-001")));
+    QVERIFY(deviceIds.contains(QStringLiteral("DEV-004")));
+    QVERIFY(!deviceIds.contains(QStringLiteral("DEV-005")));
+    adapter.stop();
 }
 
 void TcpProtocolIntegrationTest::isolatesBadCrcFrameAndKeepsReceiving()

@@ -94,6 +94,19 @@ private:
     QList<DeviceInfo> m_devices;
 };
 
+class DynamicFakeDataSource : public FakeDataSource
+{
+public:
+    bool discoversDevicesDynamically() const override
+    {
+        return true;
+    }
+
+    void emitDeviceDiscovered(const DeviceInfo &device)
+    {
+        emit deviceDiscovered(device);
+    }
+};
 class FakeTelemetryRepository final : public TelemetryRepository
 {
 public:
@@ -318,6 +331,7 @@ private slots:
     void monitoringServiceDrivesOfflineAlarmRecovery();
     void appControllerForwardsAlarmLifecycle();
     void alarmRulesUsePersistedSettings();
+    void controllerBuildsDynamicDeviceList();
     void appControllerForwardsCommands();
     void controllerDestructorStopsSource();
     void controllerSubmitsPersistenceAsynchronously();
@@ -423,6 +437,23 @@ void ApplicationLayerTest::monitoringServiceDrivesAlarmLifecycle()
     QCOMPARE(transitions.at(3).second, AlarmState::Normal);
 }
 
+void ApplicationLayerTest::controllerBuildsDynamicDeviceList()
+{
+    DynamicFakeDataSource source;
+    FakeTelemetryRepository repository;
+    QVERIFY(repository.start());
+
+    AppController controller(&source, &repository, QStringLiteral("admin"));
+    QCOMPARE(controller.devices().size(), 0);
+
+    source.emitDeviceDiscovered(makeDevice(QStringLiteral("DEV-009")));
+    QCOMPARE(controller.devices().size(), 1);
+    QCOMPARE(controller.devices().constFirst().deviceId, QStringLiteral("DEV-009"));
+    QCOMPARE(controller.onlineDeviceCount(), 1);
+
+    source.emitDeviceDiscovered(makeDevice(QStringLiteral("DEV-009")));
+    QCOMPARE(controller.devices().size(), 1);
+}
 void ApplicationLayerTest::alarmRulesUsePersistedSettings()
 {
     QSettings settings;

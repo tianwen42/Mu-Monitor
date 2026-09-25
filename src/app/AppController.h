@@ -105,6 +105,7 @@ signals:
 
 private:
     void loadDevices();
+    void handleDeviceDiscovered(const DeviceInfo &device);
     void persistTelemetry(const QList<TelemetryRecord> &records);
     void persistHeartbeats(const QList<HeartbeatRecord> &heartbeats);
     void persistAlarm(const QString &deviceId, const QString &message);

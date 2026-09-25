@@ -48,6 +48,17 @@ target_link_libraries(DeviceSimulatorServerTest PRIVATE
 
 mu_add_test(TcpProtocolIntegrationTest
     TcpProtocolIntegrationTest.cpp
+    ../src/network/IDeviceDataSource.h
+    ../src/network/TcpDeviceDataSourceAdapter.cpp
+    ../src/network/TcpDeviceDataSourceAdapter.h
+    ../src/core/BusinessStates.cpp
+    ../src/core/BusinessStates.h
+    ../src/core/Device.cpp
+    ../src/core/Device.h
+    ../src/core/TelemetrySample.cpp
+    ../src/core/TelemetrySample.h
+    ../src/network/ProtocolPayloadMapper.cpp
+    ../src/network/ProtocolPayloadMapper.h
     ../tools/DeviceSimulator/DeviceSimulatorServer.cpp
     ../tools/DeviceSimulator/DeviceSimulatorServer.h
     ../tools/DeviceSimulator/FrameEncoder.cpp

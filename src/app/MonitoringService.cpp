@@ -137,6 +137,23 @@ void MonitoringService::setDevices(const QList<DeviceInfo> &devices)
     emit onlineDeviceCountChanged(onlineDeviceCount());
 }
 
+void MonitoringService::registerDevice(const DeviceInfo &device)
+{
+    const QString deviceId = device.deviceId.trimmed();
+    if (deviceId.isEmpty() || m_deviceById.contains(deviceId)) {
+        return;
+    }
+
+    DeviceInfo discovered = device;
+    discovered.deviceId = deviceId;
+    m_devices.append(discovered);
+    m_deviceById.insert(deviceId, discovered);
+    m_online.insert(deviceId, true);
+    m_collecting.insert(deviceId, true);
+    emit deviceStateChanged(deviceId, true, true);
+    emit onlineDeviceCountChanged(onlineDeviceCount());
+}
+
 QList<DeviceInfo> MonitoringService::devices() const
 {
     return m_devices;

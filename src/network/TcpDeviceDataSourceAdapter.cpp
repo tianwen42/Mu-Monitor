@@ -31,10 +31,6 @@ bool TcpDeviceDataSourceAdapter::start()
     if (m_running) {
         return true;
     }
-    if (m_devices.isEmpty()) {
-        emit errorOccurred(QStringLiteral("没有可用的 TCP 设备"));
-        return false;
-    }
     if (m_host.trimmed().isEmpty() || m_port == 0) {
         emit errorOccurred(QStringLiteral("TCP 目标地址或端口无效"));
         return false;
@@ -68,6 +64,7 @@ void TcpDeviceDataSourceAdapter::setDevices(const QList<DeviceInfo> &devices)
     m_devices = devices;
     m_deviceIds.clear();
     m_collecting.clear();
+    m_dynamicDiscovery = devices.isEmpty();
 
     for (const DeviceInfo &device : m_devices) {
         const QString deviceId = device.deviceId.trimmed();
@@ -99,6 +96,11 @@ bool TcpDeviceDataSourceAdapter::setDeviceCollectionEnabled(
     }
     m_collecting[normalizedId] = enabled;
     return true;
+}
+
+bool TcpDeviceDataSourceAdapter::discoversDevicesDynamically() const
+{
+    return m_dynamicDiscovery;
 }
 
 void TcpDeviceDataSourceAdapter::setEndpoint(const QString &host, quint16 port)
@@ -134,8 +136,26 @@ void TcpDeviceDataSourceAdapter::handleFrame(const Frame &frame)
     }
 
     const QString deviceId = frame.deviceId.trimmed();
-    if (!m_deviceIds.contains(deviceId)
-        || !m_collecting.value(deviceId, false)) {
+    if (deviceId.isEmpty()) {
+        return;
+    }
+
+    if (!m_deviceIds.contains(deviceId)) {
+        if (!m_dynamicDiscovery) {
+            return;
+        }
+
+        DeviceInfo discovered;
+        discovered.deviceId = deviceId;
+        discovered.name = QStringLiteral("TCP 设备 %1").arg(deviceId);
+        discovered.protocol = QStringLiteral("TCP");
+        m_devices.append(discovered);
+        m_deviceIds.insert(deviceId);
+        m_collecting.insert(deviceId, true);
+        emit deviceDiscovered(discovered);
+    }
+
+    if (!m_collecting.value(deviceId, false)) {
         return;
     }
 

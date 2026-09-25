@@ -28,6 +28,7 @@ public:
 
     bool setCollectionEnabled(bool enabled) override;
     bool setDeviceCollectionEnabled(const QString &deviceId, bool enabled) override;
+    bool discoversDevicesDynamically() const override;
 
     void setEndpoint(const QString &host, quint16 port);
     QString host() const;
@@ -56,4 +57,5 @@ private:
     ConnectionState m_connectionState = ConnectionState::Disconnected;
     bool m_running = false;
     bool m_collectionEnabled = true;
+    bool m_dynamicDiscovery = true;
 };
