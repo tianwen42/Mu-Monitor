@@ -2,19 +2,40 @@
 
 #include "utils/TimeUtils.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QRandomGenerator>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QVariant>
 
 namespace {
 constexpr int kPasswordIterations = 100000;
 constexpr int kPasswordKeyLength = 32;
 const char *kConnectionName = "mu_monitor_sqlite";
+
+bool pathsReferToSameFile(const QString &left, const QString &right)
+{
+    if (left.trimmed().isEmpty() || right.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const QString leftPath = QDir::cleanPath(QFileInfo(left).absoluteFilePath());
+    const QString rightPath = QDir::cleanPath(QFileInfo(right).absoluteFilePath());
+    return leftPath.compare(rightPath, Qt::CaseInsensitive) == 0;
+}
+
+QString sqlStringLiteral(QString value)
+{
+    value.replace(QChar('\''), QStringLiteral("''"));
+    return QStringLiteral("'") + value + QStringLiteral("'");
+}
 }
 
 DatabaseManager &DatabaseManager::instance()
@@ -33,52 +54,103 @@ DatabaseManager::~DatabaseManager()
     shutdown();
 }
 
+QString DatabaseManager::runtimeDataDirectory()
+{
+    const QString overrideDirectory = qEnvironmentVariable("MU_MONITOR_DATA_DIR").trimmed();
+    if (!overrideDirectory.isEmpty()) {
+        return QDir::cleanPath(QFileInfo(overrideDirectory).absoluteFilePath());
+    }
+
+    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("data"));
+}
+
 bool DatabaseManager::initialize(QString *errorMessage)
 {
     if (m_initialized) {
         return true;
     }
 
-    const QString dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (dataDirectory.isEmpty()) {
-        m_lastError = QStringLiteral("无法获取应用数据目录");
+    return initializeAt(runtimeDataDirectory(), errorMessage);
+}
+
+bool DatabaseManager::initializeAt(const QString &dataDirectory, QString *errorMessage)
+{
+    if (m_initialized) {
+        if (pathsReferToSameFile(m_dataDirectory, dataDirectory)) {
+            return true;
+        }
+
+        m_lastError = QStringLiteral("数据库已经初始化，不能切换数据目录");
         if (errorMessage) *errorMessage = m_lastError;
         return false;
     }
 
-    if (!QDir().mkpath(dataDirectory)) {
-        m_lastError = QStringLiteral("无法创建应用数据目录：%1").arg(dataDirectory);
+    if (QSqlDatabase::contains(m_connectionName)) {
+        shutdown();
+    }
+
+    const QString requestedDirectory = dataDirectory.trimmed();
+    if (requestedDirectory.isEmpty()) {
+        m_lastError = QStringLiteral("数据目录不能为空");
         if (errorMessage) *errorMessage = m_lastError;
         return false;
     }
 
-    m_databasePath = QDir(dataDirectory).filePath(QStringLiteral("mu-monitor.db"));
+    m_dataDirectory = QDir::cleanPath(QFileInfo(requestedDirectory).absoluteFilePath());
+    if (!QDir().mkpath(m_dataDirectory)) {
+        m_lastError = QStringLiteral("无法创建数据目录：%1").arg(m_dataDirectory);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    m_databasePath = QDir(m_dataDirectory).filePath(QStringLiteral("mu-monitor.db"));
+
+    const auto fail = [&](const QString &message) {
+        m_lastError = message;
+        if (errorMessage) *errorMessage = m_lastError;
+        shutdown();
+        return false;
+    };
 
     if (!QSqlDatabase::isDriverAvailable(QStringLiteral("QSQLITE"))) {
-        m_lastError = QStringLiteral("未找到 Qt SQLite 驱动 QSQLITE");
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
+        return fail(QStringLiteral("未找到 Qt SQLite 驱动 QSQLITE"));
+    }
+
+    if (!QFileInfo::exists(m_databasePath)) {
+        const QString legacyPath = legacyDatabasePath();
+        if (!legacyPath.isEmpty() && !pathsReferToSameFile(legacyPath, m_databasePath)) {
+            if (!importLegacyDatabase(legacyPath, errorMessage)) {
+                shutdown();
+                return false;
+            }
+        }
     }
 
     m_database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
     m_database.setDatabaseName(m_databasePath);
 
     if (!m_database.open()) {
-        m_lastError = QStringLiteral("无法打开数据库：%1").arg(m_database.lastError().text());
-        if (errorMessage) *errorMessage = m_lastError;
-        return false;
+        return fail(QStringLiteral("无法打开数据库：%1").arg(m_database.lastError().text()));
     }
 
+    if (!configureConnection(errorMessage)) {
+        shutdown();
+        return false;
+    }
     if (!createTables(errorMessage)) {
+        shutdown();
         return false;
     }
     if (!normalizeTimestampStorage(errorMessage)) {
+        shutdown();
         return false;
     }
     if (!normalizeTelemetryStatusStorage(errorMessage)) {
+        shutdown();
         return false;
     }
     if (!ensureDefaultUser(errorMessage)) {
+        shutdown();
         return false;
     }
 
@@ -97,6 +169,140 @@ void DatabaseManager::shutdown()
         QSqlDatabase::removeDatabase(m_connectionName);
     }
     m_initialized = false;
+}
+
+bool DatabaseManager::configureConnection(QString *errorMessage)
+{
+    const QStringList pragmas = {
+        QStringLiteral("PRAGMA busy_timeout = 5000"),
+        QStringLiteral("PRAGMA foreign_keys = ON"),
+    };
+
+    for (const QString &pragma : pragmas) {
+        QSqlQuery query(m_database);
+        if (!query.exec(pragma)) {
+            m_lastError = QStringLiteral("配置数据库失败：%1").arg(query.lastError().text());
+            if (errorMessage) *errorMessage = m_lastError;
+            return false;
+        }
+    }
+
+    QSqlQuery journalMode(m_database);
+    if (!journalMode.exec(QStringLiteral("PRAGMA journal_mode = WAL")) || !journalMode.next()) {
+        m_lastError = QStringLiteral("启用 WAL 模式失败：%1").arg(journalMode.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    QSqlQuery integrity(m_database);
+    if (!integrity.exec(QStringLiteral("PRAGMA quick_check")) || !integrity.next()) {
+        m_lastError = QStringLiteral("检查数据库完整性失败：%1").arg(integrity.lastError().text());
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    const QString integrityResult = integrity.value(0).toString();
+    if (integrityResult.compare(QStringLiteral("ok"), Qt::CaseInsensitive) != 0) {
+        m_lastError = QStringLiteral("数据库完整性检查未通过：%1").arg(integrityResult);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
+}
+
+bool DatabaseManager::importLegacyDatabase(const QString &sourcePath, QString *errorMessage)
+{
+    const QString stagingPath = m_databasePath + QStringLiteral(".importing");
+    QFile::remove(stagingPath);
+
+    const QString legacyConnectionName =
+        m_connectionName + QStringLiteral("_legacy_")
+        + QString::number(QCoreApplication::applicationPid());
+    if (QSqlDatabase::contains(legacyConnectionName)) {
+        QSqlDatabase::removeDatabase(legacyConnectionName);
+    }
+
+    QString failure;
+    bool copied = false;
+    {
+        QSqlDatabase source = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        legacyConnectionName);
+        source.setDatabaseName(sourcePath);
+        source.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+
+        if (!source.open()) {
+            failure = QStringLiteral("无法打开旧数据库：%1").arg(source.lastError().text());
+        } else {
+            {
+                QSqlQuery integrity(source);
+                if (!integrity.exec(QStringLiteral("PRAGMA quick_check"))
+                    || !integrity.next()) {
+                    failure = QStringLiteral("旧数据库完整性检查失败：%1")
+                                  .arg(integrity.lastError().text());
+                } else if (integrity.value(0).toString().compare(
+                               QStringLiteral("ok"), Qt::CaseInsensitive)
+                           != 0) {
+                    failure = QStringLiteral("旧数据库完整性检查未通过：%1")
+                                  .arg(integrity.value(0).toString());
+                }
+            }
+
+            if (failure.isEmpty()) {
+                QSqlQuery copy(source);
+                const QString sql = QStringLiteral("VACUUM INTO ") + sqlStringLiteral(stagingPath);
+                if (!copy.exec(sql)) {
+                    failure = QStringLiteral("复制旧数据库失败：%1").arg(copy.lastError().text());
+                } else {
+                    copied = true;
+                }
+            }
+            source.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(legacyConnectionName);
+
+    if (!copied) {
+        QFile::remove(stagingPath);
+        m_lastError = failure.isEmpty() ? QStringLiteral("复制旧数据库失败") : failure;
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    if (!QFile::rename(stagingPath, m_databasePath)) {
+        QFile::remove(stagingPath);
+        m_lastError = QStringLiteral("无法启用导入的数据库：%1").arg(m_databasePath);
+        if (errorMessage) *errorMessage = m_lastError;
+        return false;
+    }
+
+    return true;
+}
+
+QString DatabaseManager::legacyDatabasePath() const
+{
+    const QStringList locations = {
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation),
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation),
+    };
+
+    for (const QString &location : locations) {
+        if (location.trimmed().isEmpty()) {
+            continue;
+        }
+
+        const QString candidate = QDir(location).filePath(QStringLiteral("mu-monitor.db"));
+        if (QFileInfo::exists(candidate) && !pathsReferToSameFile(candidate, m_databasePath)) {
+            return candidate;
+        }
+    }
+
+    return QString();
+}
+
+QString DatabaseManager::dataDirectory() const
+{
+    return m_dataDirectory;
 }
 
 bool DatabaseManager::createTables(QString *errorMessage)

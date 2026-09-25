@@ -77,7 +77,8 @@ bool DatabaseManagerTest::removeTestDataDirectory() const
 bool DatabaseManagerTest::initialize(QString *errorMessage)
 {
     QString message;
-    const bool initialized = DatabaseManager::instance().initialize(&message);
+    const bool initialized =
+        DatabaseManager::instance().initializeAt(m_dataDirectory, &message);
     if (errorMessage) {
         *errorMessage = message;
     }
@@ -88,6 +89,8 @@ void DatabaseManagerTest::initializesDefaultUserAndRole()
 {
     QVERIFY(initialize());
     QVERIFY(QFileInfo::exists(DatabaseManager::instance().databasePath()));
+    QCOMPARE(QFileInfo(DatabaseManager::instance().databasePath()).absolutePath(),
+             QFileInfo(m_dataDirectory).absoluteFilePath());
     QCOMPARE(DatabaseManager::instance().roleForUser(QStringLiteral("admin")),
              QStringLiteral("admin"));
 }

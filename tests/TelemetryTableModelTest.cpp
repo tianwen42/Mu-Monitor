@@ -87,12 +87,12 @@ void TelemetryTableModelTest::reportsStatusColors()
     model.upsertRecord(record);
 
     QCOMPARE(model.index(0, TelemetryTableModel::Status).data(Qt::ForegroundRole).value<QColor>(),
-             QColor(QStringLiteral("#22c55e")));
+             QColor(QStringLiteral("#2e7d32")));
 
     record.status = TelemetryStatus::Alarm;
     model.upsertRecord(record);
     QCOMPARE(model.index(0, TelemetryTableModel::Status).data(Qt::ForegroundRole).value<QColor>(),
-             QColor(QStringLiteral("#ef4444")));
+             QColor(QStringLiteral("#b3261e")));
 }
 
 QTEST_MAIN(TelemetryTableModelTest)

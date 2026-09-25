@@ -28,10 +28,46 @@ function Assert-PathInsideProject {
     }
 }
 
+$ProtectedDeleteDirectoryNames = @("data", "backups", "logs")
+
+function Assert-DeletePathSafe {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $segments = $fullPath -split '[\\/]+'
+    foreach ($segment in $segments) {
+        if ($ProtectedDeleteDirectoryNames -contains $segment.ToLowerInvariant()) {
+            throw "Refusing to delete protected path '$fullPath': protected directory name '$segment' is part of the path."
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+        return
+    }
+
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($fullPath)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($child in [System.IO.Directory]::EnumerateDirectories($current)) {
+            $childName = [System.IO.Path]::GetFileName($child)
+            if ($ProtectedDeleteDirectoryNames -contains $childName.ToLowerInvariant()) {
+                throw "Refusing to delete '$fullPath': it contains protected directory '$child'."
+            }
+
+            $attributes = [System.IO.File]::GetAttributes($child)
+            if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+                $pending.Push($child)
+            }
+        }
+    }
+}
+
 function Remove-DirectoryWithRetry {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     Assert-PathInsideProject -Path $Path
+    Assert-DeletePathSafe -Path $Path
     for ($attempt = 1; $attempt -le 12; ++$attempt) {
         try {
             if (Test-Path -LiteralPath $Path) {
@@ -68,8 +104,24 @@ function Remove-DistItem {
     param([Parameter(Mandatory = $true)][string]$RelativePath)
     $path = Join-Path $DistDir $RelativePath
     Assert-PathInsideDist -Path $path
+    Assert-DeletePathSafe -Path $path
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
+    }
+}
+
+function Remove-DistDeployables {
+    if (-not (Test-Path -LiteralPath $DistDir -PathType Container)) {
+        return
+    }
+
+    foreach ($item in Get-ChildItem -LiteralPath $DistDir -Force) {
+        if ($ProtectedDeleteDirectoryNames -contains $item.Name.ToLowerInvariant()) {
+            Write-Host "Preserving protected dist item: $($item.FullName)"
+            continue
+        }
+
+        Remove-DistItem -RelativePath $item.Name
     }
 }
 
@@ -120,8 +172,8 @@ if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
 Stop-ProjectProcess
 
 if (Test-Path -LiteralPath $DistDir) {
-    Write-Host "Cleaning previous dist..."
-    Remove-DirectoryWithRetry -Path $DistDir
+    Write-Host "Cleaning previous deployment files while preserving protected data directories..."
+    Remove-DistDeployables
 }
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
