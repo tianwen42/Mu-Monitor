@@ -109,6 +109,13 @@ mu_add_test(MainWindowResponsiveTest
     ../src/core/HeartbeatRecord.h
     ../src/database/DatabaseManager.cpp
     ../src/database/DatabaseManager.h
+    ../src/app/AppController.cpp
+    ../src/app/AppController.h
+    ../src/app/MonitoringService.cpp
+    ../src/app/MonitoringService.h
+    ../src/network/IDeviceDataSource.h
+    ../src/network/SimulationDataSource.cpp
+    ../src/network/SimulationDataSource.h
     ../src/ui/mainwindow.cpp
     ../src/ui/mainwindow.h
     ../src/ui/mainwindow.ui
@@ -139,5 +146,50 @@ target_link_libraries(MainWindowResponsiveTest PRIVATE
 )
 set_tests_properties(MainWindowResponsiveTest PROPERTIES
     TIMEOUT 60
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
+mu_add_test(SimulationDataSourceTest
+    SimulationDataSourceTest.cpp
+    ../src/core/Device.cpp
+    ../src/core/Device.h
+    ../src/core/TelemetrySample.cpp
+    ../src/core/TelemetrySample.h
+    ../src/network/IDeviceDataSource.h
+    ../src/network/SimulationDataSource.cpp
+    ../src/network/SimulationDataSource.h
+)
+target_link_libraries(SimulationDataSourceTest PRIVATE
+    Qt::Core
+    Qt::Test
+)
+
+mu_add_test(ApplicationLayerTest
+    ApplicationLayerTest.cpp
+    ../src/app/AppController.cpp
+    ../src/app/AppController.h
+    ../src/app/MonitoringService.cpp
+    ../src/app/MonitoringService.h
+    ../src/core/BusinessStates.cpp
+    ../src/core/BusinessStates.h
+    ../src/core/Device.cpp
+    ../src/core/Device.h
+    ../src/core/TelemetryRecord.h
+    ../src/core/TelemetrySample.cpp
+    ../src/core/TelemetrySample.h
+    ../src/database/DatabaseManager.cpp
+    ../src/database/DatabaseManager.h
+    ../src/network/IDeviceDataSource.h
+    ../src/network/SimulationDataSource.cpp
+    ../src/network/SimulationDataSource.h
+    ../src/utils/TimeUtils.cpp
+    ../src/utils/TimeUtils.h
+)
+target_link_libraries(ApplicationLayerTest PRIVATE
+    Qt::Core
+    Qt::Sql
+    Qt::Test
+)
+set_tests_properties(ApplicationLayerTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )

@@ -1,4 +1,6 @@
+#include "app/AppController.h"
 #include "database/DatabaseManager.h"
+#include "network/SimulationDataSource.h"
 #include "ui/mainwindow.h"
 
 #include <QApplication>
@@ -54,7 +56,11 @@ void MainWindowResponsiveTest::cleanupTestCase()
 
 void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
 {
-    MainWindow window(QStringLiteral("admin"));
+    SimulationDataSource source;
+    source.setSamplingInterval(1000);
+    AppController controller(&source, QStringLiteral("admin"));
+    QVERIFY(controller.start());
+    MainWindow window(&controller, QStringLiteral("admin"));
     window.setAttribute(Qt::WA_DontShowOnScreen);
     window.show();
     QTest::qWait(50);
@@ -102,7 +108,11 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
 
 void MainWindowResponsiveTest::stopsDevicesIndependently()
 {
-    MainWindow window(QStringLiteral("admin"));
+    SimulationDataSource source;
+    source.setSamplingInterval(1000);
+    AppController controller(&source, QStringLiteral("admin"));
+    QVERIFY(controller.start());
+    MainWindow window(&controller, QStringLiteral("admin"));
     window.setAttribute(Qt::WA_DontShowOnScreen);
     window.show();
     QTest::qWait(50);

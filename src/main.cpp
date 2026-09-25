@@ -1,4 +1,6 @@
+#include "app/AppController.h"
 #include "database/DatabaseManager.h"
+#include "network/SimulationDataSource.h"
 #include "ui/LoginDialog.h"
 #include "ui/mainwindow.h"
 
@@ -98,12 +100,15 @@ int main(int argc, char *argv[])
 
     int exitCode = 0;
     {
-        MainWindow w(currentUser);
+        SimulationDataSource dataSource;
+        AppController controller(&dataSource, currentUser);
+        MainWindow w(&controller, currentUser);
         w.setWindowIcon(appIcon);
         w.show();
+        controller.start();
         exitCode = QApplication::exec();
+        controller.stop();
     }
-
     DatabaseManager::instance().insertLog(
         QStringLiteral("INFO"), QStringLiteral("application"), QStringLiteral("应用退出"));
     DatabaseManager::instance().shutdown();

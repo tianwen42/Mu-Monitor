@@ -1,6 +1,9 @@
 #pragma once
 
+#include "core/BusinessStates.h"
 #include "core/DeviceInfo.h"
+#include "core/HeartbeatRecord.h"
+#include "core/TelemetryRecord.h"
 
 #include <QDateTime>
 #include <QHash>
@@ -12,6 +15,7 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
+class AppController;
 class QComboBox;
 class QCloseEvent;
 class QDateTimeEdit;
@@ -22,7 +26,6 @@ class QResizeEvent;
 class QShowEvent;
 class QPlainTextEdit;
 class QSystemTrayIcon;
-class QTimer;
 class TelemetryTableModel;
 class TrendChartWidget;
 
@@ -31,7 +34,8 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit MainWindow(const QString &currentUser, QWidget *parent = nullptr);
+    explicit MainWindow(AppController *controller, const QString &currentUser,
+                        QWidget *parent = nullptr);
     ~MainWindow() override;
 
 protected:
@@ -47,8 +51,15 @@ private slots:
     void onDeviceSelectionChanged(int row);
     void onStartSelectedDevice();
     void onStopSelectedDevice();
-    void updateDemoData();
-    void updateHeartbeat();
+    void onDevicesChanged(const QList<DeviceInfo> &devices);
+    void onTelemetryBatchReceived(const QList<TelemetryRecord> &records);
+    void onHeartbeatBatchReceived(const QList<HeartbeatRecord> &heartbeats);
+    void onConnectionStateChanged(ConnectionState state);
+    void onCollectionStateChanged(CollectionState state);
+    void onDeviceStateChanged(const QString &deviceId, bool online, bool collecting);
+    void onOnlineDeviceCountChanged(int count);
+    void onAlarmRaised(const QString &deviceId, const QString &message);
+    void onControllerError(const QString &message);
 
 private:
     void setupUi();
@@ -56,9 +67,9 @@ private:
     void setupToolBar();
     void setupTrayIcon();
     void setupConnections();
-    void setupDemoDevices();
+    void setupDeviceList();
     void setupHistoryPage();
-    void setConnectionState(bool connected);
+    void rebuildHistoryDeviceCombo();
     bool isDeviceOnline(int index) const;
     void updateKpi();
     void startDeviceCollection(int index);
@@ -74,6 +85,7 @@ private:
     void applyResponsiveLayout();
 
     Ui::MainWindow *ui = nullptr;
+    AppController *m_controller = nullptr;
     TelemetryTableModel *m_model = nullptr;
     QLabel *m_overviewDeviceNameLabel = nullptr;
     QLabel *m_overviewDeviceStateLabel = nullptr;
@@ -85,8 +97,6 @@ private:
     QLabel *m_historyCountLabel = nullptr;
     QTableWidget *m_historyTable = nullptr;
     TrendChartWidget *m_trendChart = nullptr;
-    QTimer *m_timer = nullptr;
-    QTimer *m_heartbeatTimer = nullptr;
     QPlainTextEdit *m_logOutput = nullptr;
     QSystemTrayIcon *m_trayIcon = nullptr;
     bool m_forceQuit = false;
@@ -102,8 +112,8 @@ private:
     QHash<QString, QList<double>> m_pressureHistory;
     QHash<QString, bool> m_deviceCollecting;
     QHash<QString, bool> m_deviceOnline;
-    bool m_connected = false;
-    int m_tick = 0;
+    ConnectionState m_connectionState = ConnectionState::Disconnected;
+    CollectionState m_collectionState = CollectionState::Stopped;
     qint64 m_dataPoints = 0;
     int m_onlineDeviceCount = 0;
     double m_averageTemperature = 0.0;

@@ -1,10 +1,11 @@
 #include "ui/mainwindow.h"
 #include "ui_mainwindow.h"
 
+#include "app/AppController.h"
 #include "ui/TelemetryTableModel.h"
 #include "ui/TrendChartWidget.h"
 #include "core/HeartbeatRecord.h"
-#include "database/DatabaseManager.h"
+
 #include "utils/TimeUtils.h"
 #include "ui/SettingsDialog.h"
 #include "ui/AboutDialog.h"
@@ -40,7 +41,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QPlainTextEdit>
-#include <QRandomGenerator>
+
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStyle>
@@ -51,14 +52,15 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QTimer>
+
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QtGlobal>
 
-MainWindow::MainWindow(const QString &currentUser, QWidget *parent)
+MainWindow::MainWindow(AppController *controller, const QString &currentUser, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , m_controller(controller)
     , m_currentUser(currentUser)
     , m_loginTime(QDateTime::currentDateTime())
 {
@@ -69,10 +71,11 @@ MainWindow::MainWindow(const QString &currentUser, QWidget *parent)
     setupToolBar();
     setupTrayIcon();
     setupConnections();
-    setupDemoDevices();
+    setupDeviceList();
     setupHistoryPage();
     restorePersistedState();
-    setConnectionState(true);
+    onConnectionStateChanged(m_controller->connectionState());
+    onCollectionStateChanged(m_controller->collectionState());
     updateKpi();
 }
 
@@ -231,7 +234,7 @@ void MainWindow::setupUi()
     }
     ui->alarmTitle->setText(QStringLiteral("告警记录 · 点击告警可定位设备"));
 
-    const QString role = DatabaseManager::instance().roleForUser(m_currentUser);
+    const QString role = m_controller->currentUserRole();
     const QString roleText = role == QStringLiteral("admin")
         ? QStringLiteral("管理员")
         : QStringLiteral("普通用户");
@@ -241,7 +244,7 @@ void MainWindow::setupUi()
     ui->currentUserLabel->setToolTip(
         QStringLiteral("登录时间：%1\n数据库：%2")
             .arg(TimeUtils::toLocalIso8601(m_loginTime),
-                 DatabaseManager::instance().databasePath()));
+                 m_controller->databasePath()));
 
     auto *selectedDevicePanel = new QFrame(ui->overviewTab);
     selectedDevicePanel->setObjectName(QStringLiteral("overviewSelectedDevicePanel"));
@@ -290,17 +293,12 @@ void MainWindow::setupUi()
     chartLayout->setContentsMargins(0, 0, 0, 0);
     chartLayout->addWidget(m_trendChart);
 
-    m_timer = new QTimer(this);
     auto *versionLabel = new QLabel(
         QStringLiteral("v%1").arg(QApplication::applicationVersion()), this);
     versionLabel->setObjectName(QStringLiteral("versionStatusLabel"));
     versionLabel->setToolTip(QStringLiteral("Mu-Monitor 当前版本"));
     statusBar()->addPermanentWidget(versionLabel);
 
-    m_timer->setInterval(1000);
-
-    m_heartbeatTimer = new QTimer(this);
-    m_heartbeatTimer->setInterval(3000);
 
     ui->rootLayout->setStretch(0, 0);
     ui->rootLayout->setStretch(1, 1);
@@ -484,9 +482,24 @@ void MainWindow::setupConnections()
             this, &MainWindow::onStartSelectedDevice);
     connect(ui->stopSelectedDeviceButton, &QPushButton::clicked,
             this, &MainWindow::onStopSelectedDevice);
-    connect(m_timer, &QTimer::timeout, this, &MainWindow::updateDemoData);
-    connect(m_heartbeatTimer, &QTimer::timeout, this, &MainWindow::updateHeartbeat);
-
+    connect(m_controller, &AppController::devicesChanged,
+            this, &MainWindow::onDevicesChanged);
+    connect(m_controller, &AppController::telemetryBatchReceived,
+            this, &MainWindow::onTelemetryBatchReceived);
+    connect(m_controller, &AppController::heartbeatBatchReceived,
+            this, &MainWindow::onHeartbeatBatchReceived);
+    connect(m_controller, &AppController::connectionStateChanged,
+            this, &MainWindow::onConnectionStateChanged);
+    connect(m_controller, &AppController::collectionStateChanged,
+            this, &MainWindow::onCollectionStateChanged);
+    connect(m_controller, &AppController::deviceStateChanged,
+            this, &MainWindow::onDeviceStateChanged);
+    connect(m_controller, &AppController::onlineDeviceCountChanged,
+            this, &MainWindow::onOnlineDeviceCountChanged);
+    connect(m_controller, &AppController::alarmRaised,
+            this, &MainWindow::onAlarmRaised);
+    connect(m_controller, &AppController::errorOccurred,
+            this, &MainWindow::onControllerError);
     ui->deviceList->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui->deviceList, &QListWidget::customContextMenuRequested, this,
             [this](const QPoint &position) {
@@ -506,8 +519,8 @@ void MainWindow::setupConnections()
                 menu.addSeparator();
                 QAction *startAction = menu.addAction(QStringLiteral("开始设备采集"));
                 QAction *stopAction = menu.addAction(QStringLiteral("停止设备采集"));
-                startAction->setEnabled(m_connected && !collecting);
-                stopAction->setEnabled(m_connected && collecting);
+                startAction->setEnabled(m_connectionState == ConnectionState::Connected && !collecting);
+                stopAction->setEnabled(m_connectionState == ConnectionState::Connected && collecting);
                 QAction *selected = menu.exec(
                     ui->deviceList->viewport()->mapToGlobal(position));
 
@@ -605,11 +618,31 @@ void MainWindow::setupHistoryPage()
             });
 }
 
+void MainWindow::rebuildHistoryDeviceCombo()
+{
+    if (!m_historyDeviceCombo) {
+        return;
+    }
+
+    const QString selectedDeviceId =
+        m_historyDeviceCombo->currentData().toString();
+    m_historyDeviceCombo->blockSignals(true);
+    m_historyDeviceCombo->clear();
+    m_historyDeviceCombo->addItem(QStringLiteral("全部设备"), QString());
+    for (int i = 0; i < m_deviceIds.size(); ++i) {
+        m_historyDeviceCombo->addItem(
+            QStringLiteral("%1  %2").arg(m_deviceIds.at(i), m_deviceNames.at(i)),
+            m_deviceIds.at(i));
+    }
+    const int selectedIndex = m_historyDeviceCombo->findData(selectedDeviceId);
+    m_historyDeviceCombo->setCurrentIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    m_historyDeviceCombo->blockSignals(false);
+}
 void MainWindow::restorePersistedState()
 {
     QString errorMessage;
     const QList<TelemetryRecord> latestRecords =
-        DatabaseManager::instance().latestDeviceRecords(&errorMessage);
+        m_controller->latestDeviceRecords(&errorMessage);
 
     double temperatureSum = 0.0;
     int temperatureCount = 0;
@@ -625,10 +658,10 @@ void MainWindow::restorePersistedState()
         m_averageTemperature = temperatureSum / temperatureCount;
     }
 
-    m_dataPoints = DatabaseManager::instance().telemetryRecordCount(&errorMessage);
+    m_dataPoints = m_controller->telemetryRecordCount(&errorMessage);
 
     const QList<TelemetryRecord> chartRecords =
-        DatabaseManager::instance().recentTelemetryRecords(12000, QString(), &errorMessage);
+        m_controller->recentTelemetryRecords(12000, QString(), &errorMessage);
     for (const TelemetryRecord &record : chartRecords) {
         QList<double> &temperatures = m_temperatureHistory[record.deviceId];
         QList<double> &pressures = m_pressureHistory[record.deviceId];
@@ -639,7 +672,7 @@ void MainWindow::restorePersistedState()
     }
 
     const QList<HeartbeatRecord> heartbeats =
-        DatabaseManager::instance().latestHeartbeatRecords(&errorMessage);
+        m_controller->latestHeartbeatRecords(&errorMessage);
     for (const HeartbeatRecord &heartbeat : heartbeats) {
         const int index = m_deviceIds.indexOf(heartbeat.deviceId);
         if (index < 0) {
@@ -680,10 +713,10 @@ void MainWindow::loadHistoryData(bool useRange)
                 QStringLiteral("开始时间必须早于或等于结束时间。"));
             return;
         }
-        records = DatabaseManager::instance().telemetryHistory(
+        records = m_controller->telemetryHistory(
             start, end, deviceId, 2000, &errorMessage);
     } else {
-        records = DatabaseManager::instance().recentTelemetryRecords(
+        records = m_controller->recentTelemetryRecords(
             1000, deviceId, &errorMessage);
     }
 
@@ -735,75 +768,52 @@ void MainWindow::loadHistoryData(bool useRange)
     m_historyCountLabel->setText(
         QStringLiteral("当前显示 %1 条").arg(records.size()));
 }
-void MainWindow::setupDemoDevices()
+void MainWindow::setupDeviceList()
+{
+    const QList<DeviceInfo> devices = m_controller->devices();
+    onDevicesChanged(devices);
+}
+
+void MainWindow::onDevicesChanged(const QList<DeviceInfo> &devices)
 {
     m_deviceIds.clear();
     m_deviceNames.clear();
     m_deviceInfos.clear();
-    m_onlineDeviceCount = 0;
     m_deviceCollecting.clear();
     m_deviceOnline.clear();
     ui->deviceList->clear();
 
-    QList<DeviceInfo> defaults;
-    defaults.reserve(100);
-    for (int i = 1; i <= 100; ++i) {
-        DeviceInfo device;
-        device.deviceId = QStringLiteral("DEV-%1").arg(i, 3, 10, QLatin1Char('0'));
-        device.name = QStringLiteral("模拟设备 %1").arg(i, 3, 10, QLatin1Char('0'));
-        device.model = QStringLiteral("MU-%1").arg(i, 3, 10, QLatin1Char('0'));
-        device.location = QStringLiteral("产线 %1").arg(((i - 1) / 10) + 1);
-        device.protocol = (i % 2 == 0) ? QStringLiteral("Modbus TCP") : QStringLiteral("TCP");
-        defaults.append(device);
-    }
+    m_deviceIds.reserve(devices.size());
+    m_deviceNames.reserve(devices.size());
 
-    QString databaseError;
-    if (!DatabaseManager::instance().ensureDeviceInfos(defaults, &databaseError)) {
-        if (m_logOutput) {
-            m_logOutput->appendPlainText(QStringLiteral("初始化设备信息失败：") + databaseError);
-        }
-        DatabaseManager::instance().insertLog(
-            QStringLiteral("ERROR"), QStringLiteral("device"),
-            QStringLiteral("初始化设备信息失败：%1").arg(databaseError));
-    }
-
-    QHash<QString, DeviceInfo> storedDevices;
-    const QList<DeviceInfo> stored = DatabaseManager::instance().deviceInfos(&databaseError);
-    DatabaseManager::instance().insertLog(
-        QStringLiteral("INFO"), QStringLiteral("device"),
-        QStringLiteral("设备资料初始化完成，读取到 %1 台设备").arg(stored.size()));
-
-    for (const DeviceInfo &device : stored) {
-        storedDevices.insert(device.deviceId, device);
-    }
-
-    for (const DeviceInfo &defaultDevice : defaults) {
-        const DeviceInfo device = storedDevices.value(defaultDevice.deviceId, defaultDevice);
-        const bool online = ((m_deviceIds.size() + 1) % 10) != 0;
+    for (const DeviceInfo &device : devices) {
+        const bool online = m_controller->isDeviceOnline(device.deviceId);
+        const bool collecting = m_controller->isDeviceCollecting(device.deviceId);
         m_deviceIds << device.deviceId;
         m_deviceNames << device.name;
         m_deviceInfos.insert(device.deviceId, device);
-        m_deviceCollecting.insert(device.deviceId, true);
         m_deviceOnline.insert(device.deviceId, online);
+        m_deviceCollecting.insert(device.deviceId, collecting);
 
-        auto *item = new QListWidgetItem(QStringLiteral("●  %1  %2").arg(device.deviceId, device.name));
+        auto *item = new QListWidgetItem(
+            QStringLiteral("●  %1  %2").arg(device.deviceId, device.name));
         item->setData(Qt::UserRole, device.deviceId);
         item->setData(Qt::UserRole + 1, device.name);
         item->setForeground(online ? QColor(QStringLiteral("#22c55e"))
                                    : QColor(QStringLiteral("#94a3b8")));
         ui->deviceList->addItem(item);
-
-        if (online) {
-            ++m_onlineDeviceCount;
-        }
+        updateDeviceListItem(m_deviceIds.size() - 1, online, collecting);
     }
+
+    m_onlineDeviceCount = m_controller->onlineDeviceCount();
+    rebuildHistoryDeviceCombo();
 
     if (ui->deviceList->count() > 0) {
         ui->deviceList->setCurrentRow(0);
         onDeviceSelectionChanged(0);
     }
+    updateKpi();
 }
-
 void MainWindow::updateDeviceListItem(int index, bool online, bool collecting)
 {
     if (index < 0 || index >= ui->deviceList->count()) {
@@ -846,19 +856,7 @@ void MainWindow::startDeviceCollection(int index)
     if (index < 0 || index >= m_deviceIds.size()) {
         return;
     }
-
-    const QString deviceId = m_deviceIds.at(index);
-    if (!m_connected || m_deviceCollecting.value(deviceId, false)) {
-        return;
-    }
-
-    m_deviceCollecting[deviceId] = true;
-    updateDeviceListItem(index, true, true);
-    DatabaseManager::instance().insertLog(
-        QStringLiteral("INFO"), QStringLiteral("device"),
-        QStringLiteral("设备开始采集：%1").arg(deviceId));
-    updateDeviceControlState();
-    updateSelectedChart();
+    m_controller->setDeviceCollection(m_deviceIds.at(index), true);
 }
 
 void MainWindow::stopDeviceCollection(int index)
@@ -866,17 +864,8 @@ void MainWindow::stopDeviceCollection(int index)
     if (index < 0 || index >= m_deviceIds.size()) {
         return;
     }
-
-    const QString deviceId = m_deviceIds.at(index);
-    m_deviceCollecting[deviceId] = false;
-    updateDeviceListItem(index, isDeviceOnline(index), false);
-    DatabaseManager::instance().insertLog(
-        QStringLiteral("INFO"), QStringLiteral("device"),
-        QStringLiteral("设备停止采集：%1").arg(deviceId));
-    updateDeviceControlState();
-    updateSelectedChart();
+    m_controller->setDeviceCollection(m_deviceIds.at(index), false);
 }
-
 void MainWindow::onStartSelectedDevice()
 {
     startDeviceCollection(m_deviceIds.indexOf(m_selectedDeviceId));
@@ -948,7 +937,7 @@ void MainWindow::editDeviceInfo(int index)
     info.notes = notesEdit->toPlainText().trimmed();
 
     QString errorMessage;
-    if (!DatabaseManager::instance().updateDeviceInfo(info, &errorMessage)) {
+    if (!m_controller->updateDeviceInfo(info, &errorMessage)) {
         QMessageBox::critical(this, QStringLiteral("保存失败"), errorMessage);
         return;
     }
@@ -965,7 +954,7 @@ void MainWindow::editDeviceInfo(int index)
                 .arg(info.model, info.location, info.protocol, info.ipAddress));
     }
 
-    DatabaseManager::instance().insertLog(
+    m_controller->logEvent(
         QStringLiteral("INFO"), QStringLiteral("device"),
         QStringLiteral("编辑设备信息：%1").arg(deviceId));
 
@@ -984,7 +973,7 @@ void MainWindow::showDeviceAlarmHistory(int index)
     const QString deviceName = m_deviceNames.value(index);
     QString errorMessage;
     const QList<AlarmRecord> alarms =
-        DatabaseManager::instance().alarmHistoryForDevice(deviceId, 500, &errorMessage);
+        m_controller->alarmHistoryForDevice(deviceId, 500, &errorMessage);
 
     QDialog dialog(this);
     dialog.setWindowTitle(
@@ -1057,7 +1046,7 @@ void MainWindow::updateDeviceControlState()
 {
     const int index = m_deviceIds.indexOf(m_selectedDeviceId);
     const bool hasSelection = index >= 0 && !m_selectedDeviceId.isEmpty();
-    const bool online = hasSelection && m_connected && isDeviceOnline(index);
+    const bool online = hasSelection && m_connectionState == ConnectionState::Connected && isDeviceOnline(index);
     const bool collecting = hasSelection && m_deviceCollecting.value(m_selectedDeviceId, false);
 
     TelemetryStatus statusCode = TelemetryStatus::Offline;
@@ -1149,7 +1138,7 @@ void MainWindow::updateDeviceControlState()
         m_overviewDeviceMetricsLabel->setToolTip(QString());
     }
 
-    const bool controllable = m_connected;
+    const bool controllable = m_connectionState == ConnectionState::Connected;
     ui->startSelectedDeviceButton->setEnabled(controllable && !collecting);
     ui->stopSelectedDeviceButton->setEnabled(controllable && collecting);
 }
@@ -1169,30 +1158,32 @@ void MainWindow::updateSelectedChart()
         m_pressureHistory.value(m_selectedDeviceId),
         QStringLiteral("%1 %2").arg(m_selectedDeviceId, m_deviceNames.value(index)));
 }
-void MainWindow::setConnectionState(bool connected)
+void MainWindow::onConnectionStateChanged(ConnectionState state)
 {
-    m_connected = connected;
+    m_connectionState = state;
+    const bool connected = state == ConnectionState::Connected;
 
-    if (connected) {
+    if (state == ConnectionState::Connecting) {
+        ui->connectionStatusLabel->setText(QStringLiteral("● 正在连接"));
+        ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#fbbf24;"));
+        ui->connectButton->setText(QStringLiteral("停止检测"));
+        ui->startButton->setEnabled(false);
+    } else if (state == ConnectionState::Reconnecting) {
+        ui->connectionStatusLabel->setText(QStringLiteral("● 正在重连"));
+        ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#fbbf24;"));
+        ui->connectButton->setText(QStringLiteral("停止检测"));
+        ui->startButton->setEnabled(false);
+    } else if (connected) {
         ui->connectionStatusLabel->setText(QStringLiteral("● 心跳检测中"));
         ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#22c55e;"));
         ui->connectButton->setText(QStringLiteral("停止检测"));
         ui->startButton->setEnabled(true);
-
-        m_heartbeatTimer->start();
-        if (!m_timer->isActive()) {
-            m_timer->start();
-            ui->startButton->setText(QStringLiteral("暂停采集"));
-        }
-
-        updateHeartbeat();
-        ui->statusbar->showMessage(QStringLiteral("设备心跳检测与数据采集已自动启动"), 4000);
+        ui->statusbar->showMessage(
+            QStringLiteral("设备心跳检测与数据采集已启动"), 4000);
         if (m_logOutput) {
-            m_logOutput->appendPlainText(QStringLiteral("设备心跳检测与数据采集已自动启动"));
+            m_logOutput->appendPlainText(
+                QStringLiteral("设备心跳检测与数据采集已启动"));
         }
-        DatabaseManager::instance().insertLog(
-            QStringLiteral("INFO"), QStringLiteral("connection"),
-            QStringLiteral("设备心跳检测与数据采集已自动启动"));
     } else {
         ui->connectionStatusLabel->setText(QStringLiteral("● 检测已停止"));
         ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#94a3b8;"));
@@ -1200,185 +1191,163 @@ void MainWindow::setConnectionState(bool connected)
         ui->startButton->setEnabled(false);
         ui->startButton->setText(QStringLiteral("开始采集"));
 
-        m_heartbeatTimer->stop();
-        m_timer->stop();
         for (int i = 0; i < m_deviceIds.size(); ++i) {
-            updateDeviceListItem(i, false, m_deviceCollecting.value(m_deviceIds.at(i), false));
+            const QString deviceId = m_deviceIds.at(i);
+            m_deviceOnline[deviceId] = false;
+            updateDeviceListItem(
+                i, false, m_deviceCollecting.value(deviceId, false));
         }
-
+        m_onlineDeviceCount = 0;
         ui->statusbar->showMessage(QStringLiteral("设备心跳检测已停止"), 4000);
-        updateDeviceControlState();
         if (m_logOutput) {
             m_logOutput->appendPlainText(QStringLiteral("设备心跳检测已停止"));
         }
-        DatabaseManager::instance().insertLog(
-            QStringLiteral("INFO"), QStringLiteral("connection"),
-            QStringLiteral("设备心跳检测已停止"));
     }
+
+    updateDeviceControlState();
+    updateSelectedChart();
+    updateKpi();
 }
+
+void MainWindow::onCollectionStateChanged(CollectionState state)
+{
+    m_collectionState = state;
+    const bool running = state == CollectionState::Running;
+    ui->startButton->setText(
+        running ? QStringLiteral("暂停采集") : QStringLiteral("开始采集"));
+    ui->startButton->setEnabled(m_connectionState == ConnectionState::Connected);
+    updateDeviceControlState();
+}
+
 void MainWindow::onConnectClicked()
 {
-    setConnectionState(!m_connected);
+    if (m_connectionState == ConnectionState::Connected
+        || m_connectionState == ConnectionState::Connecting
+        || m_connectionState == ConnectionState::Reconnecting) {
+        m_controller->stop();
+    } else {
+        m_controller->start();
+    }
 }
 
 void MainWindow::onStartClicked()
 {
-    if (!m_connected) {
+    if (m_connectionState != ConnectionState::Connected) {
         return;
     }
 
-    if (m_timer->isActive()) {
-        m_timer->stop();
-        ui->startButton->setText(QStringLiteral("开始采集"));
+    if (m_collectionState == CollectionState::Running) {
+        m_controller->pauseCollection();
         ui->statusbar->showMessage(QStringLiteral("采集已暂停"), 3000);
-        if (m_logOutput) m_logOutput->appendPlainText(QStringLiteral("采集已暂停"));
-        DatabaseManager::instance().insertLog(QStringLiteral("INFO"), QStringLiteral("collection"),
-                                              QStringLiteral("采集已暂停"));
+        if (m_logOutput) {
+            m_logOutput->appendPlainText(QStringLiteral("采集已暂停"));
+        }
     } else {
-        m_timer->start();
-        ui->startButton->setText(QStringLiteral("暂停采集"));
-        ui->statusbar->showMessage(QStringLiteral("开始接收模拟设备数据"), 3000);
-        if (m_logOutput) m_logOutput->appendPlainText(QStringLiteral("开始接收模拟设备数据"));
-        DatabaseManager::instance().insertLog(QStringLiteral("INFO"), QStringLiteral("collection"),
-                                              QStringLiteral("开始接收模拟设备数据"));
+        m_controller->resumeCollection();
+        ui->statusbar->showMessage(
+            QStringLiteral("开始接收模拟设备数据"), 3000);
+        if (m_logOutput) {
+            m_logOutput->appendPlainText(
+                QStringLiteral("开始接收模拟设备数据"));
+        }
     }
-}
-
-void MainWindow::onClearAlarmsClicked()
+}void MainWindow::onClearAlarmsClicked()
 {
     ui->alarmList->clear();
     ui->overviewAlarmList->clear();
-    DatabaseManager::instance().insertLog(QStringLiteral("INFO"), QStringLiteral("alarm"),
+    m_controller->logEvent(QStringLiteral("INFO"), QStringLiteral("alarm"),
                                           QStringLiteral("已清空告警列表"));
     updateKpi();
 }
 
-void MainWindow::updateHeartbeat()
+void MainWindow::onTelemetryBatchReceived(const QList<TelemetryRecord> &records)
 {
-    int onlineCount = 0;
-    QList<HeartbeatRecord> heartbeats;
-    heartbeats.reserve(m_deviceIds.size());
+    double temperatureSum = 0.0;
+    int temperatureCount = 0;
 
-    for (int i = 0; i < m_deviceIds.size(); ++i) {
-        const QString deviceId = m_deviceIds.at(i);
-        const bool online = ((i + 1) % 10) != 0;
-        const bool collecting = m_deviceCollecting.value(deviceId, true);
-
-        m_deviceOnline[deviceId] = online;
-        updateDeviceListItem(i, online, collecting);
-        heartbeats.append({
-            deviceId,
-            QDateTime::currentDateTime(),
-            online,
-            collecting,
-            online ? QRandomGenerator::global()->bounded(20, 90) : -1,
-        });
-
-        if (online) {
-            ++onlineCount;
-        }
-    }
-
-    m_onlineDeviceCount = onlineCount;
-
-    QString databaseError;
-    if (!DatabaseManager::instance().insertHeartbeatRecords(heartbeats, &databaseError)) {
-        if (m_logOutput) {
-            m_logOutput->appendPlainText(
-                QStringLiteral("心跳数据入库失败：") + databaseError);
-        }
-    }
-
-    updateDeviceControlState();
-    updateSelectedChart();
-    updateKpi();
-}
-void MainWindow::updateDemoData()
-{
-    ++m_tick;
-    m_averageTemperature = 0.0;
-    int collectingCount = 0;
-    QList<TelemetryRecord> records;
-
-    for (int i = 0; i < m_deviceIds.size(); ++i) {
-        const double jitterTemp = (QRandomGenerator::global()->generateDouble() - 0.5) * 7.0;
-        const double jitterPressure = (QRandomGenerator::global()->generateDouble() - 0.5) * 0.16;
-        const double jitterSpeed = (QRandomGenerator::global()->generateDouble() - 0.5) * 120.0;
-        const double jitterVoltage = (QRandomGenerator::global()->generateDouble() - 0.5) * 5.0;
-
-        const QString deviceId = m_deviceIds.at(i);
-        const bool online = isDeviceOnline(i);
-        const bool collecting = m_deviceCollecting.value(deviceId, true);
-
-        double temperature = (online && collecting) ? 58.0 + i * 5.0 + jitterTemp : 0.0;
-        double pressure = (online && collecting) ? 1.05 + i * 0.10 + jitterPressure : 0.0;
-        double speed = (online && collecting) ? 1200.0 + i * 170.0 + jitterSpeed : 0.0;
-        double voltage = (online && collecting) ? 220.0 + jitterVoltage : 0.0;
-        TelemetryStatus status = !online
-            ? TelemetryStatus::Offline
-            : (collecting ? TelemetryStatus::Online : TelemetryStatus::Stopped);
-        QString alarmMessage;
-
-        if (online && collecting && m_tick % 13 == 0 && i == 1) {
-            pressure = 2.08;
-            status = TelemetryStatus::Alarm;
-            alarmMessage = QStringLiteral("压力超过阈值 1.80 MPa");
-        }
-
-        if (online && collecting && m_tick % 17 == 0 && i == 2) {
-            temperature = 86.5;
-            status = TelemetryStatus::Alarm;
-            alarmMessage = QStringLiteral("温度超过阈值 80 °C");
-        }
-
-        TelemetryRecord record;
-        record.deviceId = deviceId;
-        record.name = m_deviceNames.at(i);
-        record.status = status;
-        record.temperature = temperature;
-        record.pressure = pressure;
-        record.speed = speed;
-        record.voltage = voltage;
-        record.updatedAt = QDateTime::currentDateTime();
-
+    for (const TelemetryRecord &record : records) {
         m_model->upsertRecord(record);
-        records.append(record);
-
-        if (online && collecting) {
-            QList<double> &temperatureHistory = m_temperatureHistory[record.deviceId];
-            QList<double> &pressureHistory = m_pressureHistory[record.deviceId];
-            temperatureHistory.append(temperature);
-            pressureHistory.append(pressure);
-            while (temperatureHistory.size() > 120) temperatureHistory.removeFirst();
-            while (pressureHistory.size() > 120) pressureHistory.removeFirst();
-            m_averageTemperature += temperature;
-            ++collectingCount;
-            ++m_dataPoints;
+        if (record.status != TelemetryStatus::Online
+            && record.status != TelemetryStatus::Alarm) {
+            continue;
         }
 
-        if (!alarmMessage.isEmpty()) {
-            appendAlarm(record.deviceId, alarmMessage);
+        QList<double> &temperatureHistory = m_temperatureHistory[record.deviceId];
+        QList<double> &pressureHistory = m_pressureHistory[record.deviceId];
+        temperatureHistory.append(record.temperature);
+        pressureHistory.append(record.pressure);
+        while (temperatureHistory.size() > 120) {
+            temperatureHistory.removeFirst();
         }
+        while (pressureHistory.size() > 120) {
+            pressureHistory.removeFirst();
+        }
+
+        temperatureSum += record.temperature;
+        ++temperatureCount;
+        ++m_dataPoints;
     }
-    if (collectingCount > 0) {
-        m_averageTemperature /= collectingCount;
-    } else {
-        m_averageTemperature = 0.0;
-    }
+
+    m_averageTemperature = temperatureCount > 0
+        ? temperatureSum / temperatureCount
+        : 0.0;
     updateSelectedChart();
     updateDeviceControlState();
-
-    QString databaseError;
-    if (!DatabaseManager::instance().insertTelemetryRecords(records, &databaseError)) {
-        if (m_logOutput) {
-            m_logOutput->appendPlainText(
-                QStringLiteral("遥测数据入库失败：") + databaseError);
-        }
-    }
-
     updateKpi();
 }
 
+void MainWindow::onHeartbeatBatchReceived(const QList<HeartbeatRecord> &heartbeats)
+{
+    for (const HeartbeatRecord &heartbeat : heartbeats) {
+        const int index = m_deviceIds.indexOf(heartbeat.deviceId);
+        if (index < 0) {
+            continue;
+        }
+        m_deviceOnline[heartbeat.deviceId] = heartbeat.online;
+        m_deviceCollecting[heartbeat.deviceId] = heartbeat.collecting;
+        updateDeviceListItem(index, heartbeat.online, heartbeat.collecting);
+    }
+
+    m_onlineDeviceCount = m_controller->onlineDeviceCount();
+    updateDeviceControlState();
+    updateSelectedChart();
+    updateKpi();
+}
+
+void MainWindow::onDeviceStateChanged(const QString &deviceId, bool online, bool collecting)
+{
+    const int index = m_deviceIds.indexOf(deviceId);
+    if (index < 0) {
+        return;
+    }
+
+    m_deviceOnline[deviceId] = online;
+    m_deviceCollecting[deviceId] = collecting;
+    updateDeviceListItem(index, online, collecting);
+    updateDeviceControlState();
+    updateSelectedChart();
+    updateKpi();
+}
+
+void MainWindow::onOnlineDeviceCountChanged(int count)
+{
+    m_onlineDeviceCount = count;
+    updateKpi();
+}
+
+void MainWindow::onAlarmRaised(const QString &deviceId, const QString &message)
+{
+    appendAlarm(deviceId, message);
+}
+
+void MainWindow::onControllerError(const QString &message)
+{
+    if (m_logOutput) {
+        m_logOutput->appendPlainText(
+            QStringLiteral("应用层错误：%1").arg(message));
+    }
+    statusBar()->showMessage(message, 5000);
+}
 void MainWindow::onAlarmActivated(QListWidgetItem *item)
 {
     if (!item) {
@@ -1424,8 +1393,8 @@ void MainWindow::appendAlarm(const QString &deviceId, const QString &message)
         m_logOutput->appendPlainText(text);
     }
 
-    DatabaseManager::instance().insertAlarmRecord(deviceId, QStringLiteral("WARN"), message);
-    DatabaseManager::instance().insertLog(QStringLiteral("WARN"), QStringLiteral("alarm"), text);
+
+
 
     auto *overviewItem = new QListWidgetItem(text);
     overviewItem->setForeground(QColor(QStringLiteral("#f87171")));
