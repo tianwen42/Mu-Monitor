@@ -5,14 +5,51 @@
 #include "network/IDeviceDataSource.h"
 
 #include <QDateTime>
+#include <QPromise>
+#include <QSharedPointer>
 
-AppController::AppController(IDeviceDataSource *dataSource, const QString &currentUser,
-                             QObject *parent)
+#include <utility>
+
+namespace {
+
+template <typename T>
+QFuture<T> rejectedFuture(const QString &errorMessage)
+{
+    auto promise = QSharedPointer<QPromise<T>>::create();
+    promise->start();
+    QFuture<T> future = promise->future();
+    T result;
+    result.error = errorMessage;
+    promise->addResult(std::move(result));
+    promise->finish();
+    return future;
+}
+
+} // namespace
+
+AppController::AppController(IDeviceDataSource *dataSource,
+                             TelemetryRepository *repository,
+                             const QString &currentUser, QObject *parent)
     : QObject(parent)
     , m_dataSource(dataSource)
+    , m_repository(repository)
     , m_currentUser(currentUser)
 {
     m_monitoringService = new MonitoringService(m_dataSource, this);
+
+    if (m_repository) {
+        m_persistenceQueueCapacity = m_repository->options().queueCapacity;
+        connect(m_repository, &TelemetryRepository::telemetryBatchCompleted,
+                this, &AppController::handleTelemetryBatchCompleted);
+        connect(m_repository, &TelemetryRepository::heartbeatBatchCompleted,
+                this, &AppController::handleHeartbeatBatchCompleted);
+        connect(m_repository, &TelemetryRepository::requestRejected,
+                this, &AppController::handleRequestRejected);
+        connect(m_repository, &TelemetryRepository::queueDepthChanged,
+                this, &AppController::handleQueueDepthChanged);
+        connect(m_repository, &TelemetryRepository::errorOccurred,
+                this, &AppController::handleRepositoryError);
+    }
 
     connect(m_monitoringService, &MonitoringService::telemetryBatchReceived,
             this, [this](const QList<TelemetryRecord> &records) {
@@ -49,6 +86,10 @@ AppController::AppController(IDeviceDataSource *dataSource, const QString &curre
 
 AppController::~AppController()
 {
+    if (m_repository) {
+        QObject::disconnect(m_repository, nullptr, this, nullptr);
+    }
+
     if (!m_monitoringService) {
         return;
     }
@@ -58,6 +99,7 @@ AppController::~AppController()
         m_monitoringService->stop();
     }
 }
+
 QList<DeviceInfo> AppController::devices() const
 {
     return m_devices;
@@ -158,6 +200,8 @@ int AppController::onlineDeviceCount() const
     return m_monitoringService->onlineDeviceCount();
 }
 
+// Legacy synchronous readers retained for source compatibility with the
+// current UI. Async readers below are the migration target.
 QList<TelemetryRecord> AppController::latestDeviceRecords(QString *errorMessage) const
 {
     return DatabaseManager::instance().latestDeviceRecords(errorMessage);
@@ -202,11 +246,105 @@ bool AppController::updateDeviceInfo(const DeviceInfo &device,
     return DatabaseManager::instance().updateDeviceInfo(device, errorMessage);
 }
 
+QFuture<TelemetryRecordsResult> AppController::latestDeviceRecordsAsync()
+{
+    if (!m_repository) {
+        return rejectedFuture<TelemetryRecordsResult>(QStringLiteral("遥测仓库未配置"));
+    }
+    return m_repository->latestDeviceRecords();
+}
+
+QFuture<TelemetryCountResult> AppController::telemetryRecordCountAsync()
+{
+    if (!m_repository) {
+        return rejectedFuture<TelemetryCountResult>(QStringLiteral("遥测仓库未配置"));
+    }
+    return m_repository->telemetryRecordCount();
+}
+
+QFuture<TelemetryRecordsResult> AppController::recentTelemetryRecordsAsync(
+    int limit, const QString &deviceId)
+{
+    if (!m_repository) {
+        return rejectedFuture<TelemetryRecordsResult>(QStringLiteral("遥测仓库未配置"));
+    }
+    return m_repository->recentTelemetryRecords(limit, deviceId);
+}
+
+QFuture<TelemetryRecordsResult> AppController::telemetryHistoryAsync(
+    const QDateTime &start, const QDateTime &end, const QString &deviceId,
+    int limit)
+{
+    if (!m_repository) {
+        return rejectedFuture<TelemetryRecordsResult>(QStringLiteral("遥测仓库未配置"));
+    }
+    return m_repository->telemetryHistory(start, end, deviceId, limit);
+}
+
+QFuture<HeartbeatRecordsResult> AppController::latestHeartbeatRecordsAsync()
+{
+    if (!m_repository) {
+        return rejectedFuture<HeartbeatRecordsResult>(QStringLiteral("遥测仓库未配置"));
+    }
+    return m_repository->latestHeartbeatRecords();
+}
+
+int AppController::persistenceQueueDepth() const
+{
+    return m_persistenceQueueDepth;
+}
+
+int AppController::persistenceQueueCapacity() const
+{
+    return m_persistenceQueueCapacity;
+}
+
+int AppController::pendingPersistenceRequests() const
+{
+    return m_pendingRepositoryRequests.size();
+}
+
+quint64 AppController::acceptedTelemetryBatches() const
+{
+    return m_acceptedTelemetryBatches;
+}
+
+quint64 AppController::acceptedHeartbeatBatches() const
+{
+    return m_acceptedHeartbeatBatches;
+}
+
+quint64 AppController::completedTelemetryBatches() const
+{
+    return m_completedTelemetryBatches;
+}
+
+quint64 AppController::completedHeartbeatBatches() const
+{
+    return m_completedHeartbeatBatches;
+}
+
+quint64 AppController::rejectedPersistenceRequests() const
+{
+    return m_rejectedPersistenceRequests;
+}
+
+quint64 AppController::failedPersistenceBatches() const
+{
+    return m_failedPersistenceBatches;
+}
+
+QString AppController::lastPersistenceError() const
+{
+    return m_lastPersistenceError;
+}
+
 void AppController::logEvent(const QString &level, const QString &source,
                              const QString &message) const
 {
     DatabaseManager::instance().insertLog(level, source, message);
 }
+
 void AppController::loadDevices()
 {
     QList<DeviceInfo> defaults;
@@ -252,21 +390,50 @@ void AppController::loadDevices()
 
 void AppController::persistTelemetry(const QList<TelemetryRecord> &records)
 {
-    QString errorMessage;
-    if (!DatabaseManager::instance().insertTelemetryRecords(records, &errorMessage)) {
-        emit errorOccurred(
-            QStringLiteral("遥测数据入库失败：%1").arg(errorMessage));
+    if (records.isEmpty()) {
+        return;
     }
+    if (!m_repository) {
+        handleRepositoryError(QStringLiteral("遥测仓库未配置"));
+        return;
+    }
+
+    const quint64 rejectedBefore = m_rejectedPersistenceRequests;
+    const quint64 requestId = m_repository->submitTelemetryBatch(records);
+    if (requestId == 0) {
+        if (m_rejectedPersistenceRequests == rejectedBefore) {
+            handleRequestRejected(0, QStringLiteral("遥测批量提交被拒绝"));
+        }
+        return;
+    }
+
+    m_pendingRepositoryRequests.insert(requestId);
+    ++m_acceptedTelemetryBatches;
+    emit persistenceStatusChanged();
 }
 
 void AppController::persistHeartbeats(const QList<HeartbeatRecord> &heartbeats)
 {
-    QString errorMessage;
-    if (!DatabaseManager::instance().insertHeartbeatRecords(
-            heartbeats, &errorMessage)) {
-        emit errorOccurred(
-            QStringLiteral("心跳数据入库失败：%1").arg(errorMessage));
+    if (heartbeats.isEmpty()) {
+        return;
     }
+    if (!m_repository) {
+        handleRepositoryError(QStringLiteral("遥测仓库未配置"));
+        return;
+    }
+
+    const quint64 rejectedBefore = m_rejectedPersistenceRequests;
+    const quint64 requestId = m_repository->submitHeartbeatBatch(heartbeats);
+    if (requestId == 0) {
+        if (m_rejectedPersistenceRequests == rejectedBefore) {
+            handleRequestRejected(0, QStringLiteral("心跳批量提交被拒绝"));
+        }
+        return;
+    }
+
+    m_pendingRepositoryRequests.insert(requestId);
+    ++m_acceptedHeartbeatBatches;
+    emit persistenceStatusChanged();
 }
 
 void AppController::persistAlarm(const QString &deviceId, const QString &message)
@@ -280,4 +447,55 @@ void AppController::persistAlarm(const QString &deviceId, const QString &message
     DatabaseManager::instance().insertLog(
         QStringLiteral("WARN"), QStringLiteral("alarm"),
         QStringLiteral("%1 %2").arg(deviceId, message));
+}
+
+void AppController::handleTelemetryBatchCompleted(
+    quint64 requestId, int insertedCount, const QString &error)
+{
+    Q_UNUSED(insertedCount)
+    m_pendingRepositoryRequests.remove(requestId);
+    ++m_completedTelemetryBatches;
+    if (!error.isEmpty()) {
+        ++m_failedPersistenceBatches;
+        m_lastPersistenceError = error;
+    }
+    emit persistenceStatusChanged();
+}
+
+void AppController::handleHeartbeatBatchCompleted(
+    quint64 requestId, int insertedCount, const QString &error)
+{
+    Q_UNUSED(insertedCount)
+    m_pendingRepositoryRequests.remove(requestId);
+    ++m_completedHeartbeatBatches;
+    if (!error.isEmpty()) {
+        ++m_failedPersistenceBatches;
+        m_lastPersistenceError = error;
+    }
+    emit persistenceStatusChanged();
+}
+
+void AppController::handleRequestRejected(quint64 requestId,
+                                          const QString &reason)
+{
+    Q_UNUSED(requestId)
+    ++m_rejectedPersistenceRequests;
+    m_lastPersistenceError = reason;
+    emit persistenceStatusChanged();
+    emit errorOccurred(QStringLiteral("数据库任务被拒绝：%1").arg(reason));
+}
+
+void AppController::handleQueueDepthChanged(int depth, int capacity)
+{
+    m_persistenceQueueDepth = depth;
+    m_persistenceQueueCapacity = capacity;
+    emit persistenceQueueChanged(depth, capacity);
+    emit persistenceStatusChanged();
+}
+
+void AppController::handleRepositoryError(const QString &message)
+{
+    m_lastPersistenceError = message;
+    emit persistenceStatusChanged();
+    emit errorOccurred(message);
 }

@@ -1,6 +1,7 @@
 #include "app/AppController.h"
 #include "auth/AuthTypes.h"
 #include "database/DatabaseManager.h"
+#include "database/SqliteTelemetryRepository.h"
 #include "network/SimulationDataSource.h"
 #include "ui/LoginDialog.h"
 #include "ui/mainwindow.h"
@@ -104,13 +105,29 @@ int main(int argc, char *argv[])
     int exitCode = 0;
     {
         SimulationDataSource dataSource;
-        AppController controller(&dataSource, currentUser);
+        SqliteTelemetryRepository telemetryRepository(
+            DatabaseManager::instance().databasePath());
+        QString repositoryError;
+        if (!telemetryRepository.start(&repositoryError)) {
+            QMessageBox::critical(
+                nullptr,
+                QStringLiteral("遥测仓库启动失败"),
+                repositoryError + QStringLiteral("\n\n数据库路径：")
+                    + DatabaseManager::instance().databasePath());
+            DatabaseManager::instance().shutdown();
+            return 1;
+        }
+
+        AppController controller(&dataSource, &telemetryRepository, currentUser);
         MainWindow w(&controller, currentUser);
         w.setWindowIcon(appIcon);
         w.show();
         controller.start();
         exitCode = QApplication::exec();
+
+        // GUI/命令处理先停止，随后排空数据库队列并关闭工作线程。
         controller.stop();
+        telemetryRepository.shutdown();
     }
     DatabaseManager::instance().insertLog(
         QStringLiteral("INFO"), QStringLiteral("application"), QStringLiteral("应用退出"));

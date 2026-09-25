@@ -59,6 +59,16 @@ QFuture<T> rejectedFuture(const QString &errorMessage)
     return future;
 }
 
+template <typename T>
+QFuture<T> readyFuture(T result)
+{
+    auto promise = QSharedPointer<QPromise<T>>::create();
+    promise->start();
+    QFuture<T> future = promise->future();
+    resolvePromise(promise, std::move(result));
+    return future;
+}
+
 class DatabaseWorker final : public QObject
 {
 public:
@@ -412,6 +422,93 @@ public:
         return result;
     }
 
+    TelemetryRecordsResult recentTelemetryRecords(int limit,
+                                                const QString &deviceId)
+    {
+        TelemetryRecordsResult result;
+        if (limit <= 0) {
+            result.success = true;
+            return result;
+        }
+
+        QSqlQuery query(m_database);
+        query.prepare(QStringLiteral(
+            "SELECT device_id, name, status, temperature, pressure, speed, voltage, recorded_at "
+            "FROM telemetry WHERE (? = '' OR device_id = ?) "
+            "ORDER BY recorded_at DESC LIMIT ?"));
+        query.addBindValue(deviceId);
+        query.addBindValue(deviceId);
+        query.addBindValue(limit);
+
+        if (!query.exec()) {
+            result.error = QStringLiteral("查询最近遥测历史失败：%1")
+                               .arg(query.lastError().text());
+            return result;
+        }
+
+        while (query.next()) {
+            TelemetryRecord record;
+            record.deviceId = query.value(0).toString();
+            record.name = query.value(1).toString();
+            record.status = telemetryStatusFromString(query.value(2).toString());
+            record.temperature = query.value(3).toDouble();
+            record.pressure = query.value(4).toDouble();
+            record.speed = query.value(5).toDouble();
+            record.voltage = query.value(6).toDouble();
+            record.updatedAt = TimeUtils::fromIso8601(query.value(7).toString());
+            result.records.append(record);
+        }
+
+        result.success = true;
+        return result;
+    }
+
+    TelemetryRecordsResult telemetryHistory(const QDateTime &start,
+                                            const QDateTime &end,
+                                            const QString &deviceId,
+                                            int limit)
+    {
+        TelemetryRecordsResult result;
+        if (!start.isValid() || !end.isValid() || start > end || limit <= 0) {
+            result.error = QStringLiteral("时间范围或查询数量无效");
+            return result;
+        }
+
+        QSqlQuery query(m_database);
+        query.prepare(QStringLiteral(
+            "SELECT device_id, name, status, temperature, pressure, speed, voltage, recorded_at "
+            "FROM telemetry WHERE recorded_at >= ? AND recorded_at <= ? "
+            "AND (? = '' OR device_id = ?) "
+            "ORDER BY recorded_at DESC LIMIT ?"));
+        query.addBindValue(TimeUtils::toUtcIso8601(start));
+        query.addBindValue(TimeUtils::toUtcIso8601(end));
+        query.addBindValue(deviceId);
+        query.addBindValue(deviceId);
+        query.addBindValue(limit);
+
+        if (!query.exec()) {
+            result.error = QStringLiteral("按条件查询遥测历史失败：%1")
+                               .arg(query.lastError().text());
+            return result;
+        }
+
+        while (query.next()) {
+            TelemetryRecord record;
+            record.deviceId = query.value(0).toString();
+            record.name = query.value(1).toString();
+            record.status = telemetryStatusFromString(query.value(2).toString());
+            record.temperature = query.value(3).toDouble();
+            record.pressure = query.value(4).toDouble();
+            record.speed = query.value(5).toDouble();
+            record.voltage = query.value(6).toDouble();
+            record.updatedAt = TimeUtils::fromIso8601(query.value(7).toString());
+            result.records.append(record);
+        }
+
+        result.success = true;
+        return result;
+    }
+
     TelemetryCountResult telemetryRecordCount()
     {
         TelemetryCountResult result;
@@ -694,6 +791,53 @@ public:
         return future;
     }
 
+    QFuture<TelemetryRecordsResult> recentTelemetryRecords(
+        int limit, const QString &deviceId)
+    {
+        if (limit <= 0) {
+            TelemetryRecordsResult result;
+            result.success = true;
+            return readyFuture(std::move(result));
+        }
+
+        auto promise = QSharedPointer<QPromise<TelemetryRecordsResult>>::create();
+        promise->start();
+        QFuture<TelemetryRecordsResult> future = promise->future();
+        const quint64 requestId = enqueueTask(
+            [promise, limit, deviceId](DatabaseWorker &worker, quint64) {
+                resolvePromise(promise, worker.recentTelemetryRecords(limit, deviceId));
+            });
+        if (requestId == 0) {
+            resolvePromise(promise, rejectedTelemetryRecords(
+                QStringLiteral("数据库任务队列已关闭或已满")));
+        }
+        return future;
+    }
+
+    QFuture<TelemetryRecordsResult> telemetryHistory(
+        const QDateTime &start, const QDateTime &end,
+        const QString &deviceId, int limit)
+    {
+        if (!start.isValid() || !end.isValid() || start > end || limit <= 0) {
+            return rejectedFuture<TelemetryRecordsResult>(
+                QStringLiteral("时间范围或查询数量无效"));
+        }
+
+        auto promise = QSharedPointer<QPromise<TelemetryRecordsResult>>::create();
+        promise->start();
+        QFuture<TelemetryRecordsResult> future = promise->future();
+        const quint64 requestId = enqueueTask(
+            [promise, start, end, deviceId, limit](DatabaseWorker &worker, quint64) {
+                resolvePromise(promise, worker.telemetryHistory(
+                    start, end, deviceId, limit));
+            });
+        if (requestId == 0) {
+            resolvePromise(promise, rejectedTelemetryRecords(
+                QStringLiteral("数据库任务队列已关闭或已满")));
+        }
+        return future;
+    }
+
     QFuture<TelemetryRecordsResult> telemetryBetween(const QDateTime &start,
                                                      const QDateTime &end)
     {
@@ -908,6 +1052,19 @@ QFuture<TelemetryRecordsResult> SqliteTelemetryRepository::latestDeviceRecords()
 QFuture<HeartbeatRecordsResult> SqliteTelemetryRepository::latestHeartbeatRecords()
 {
     return d->latestHeartbeatRecords();
+}
+
+QFuture<TelemetryRecordsResult> SqliteTelemetryRepository::recentTelemetryRecords(
+    int limit, const QString &deviceId)
+{
+    return d->recentTelemetryRecords(limit, deviceId);
+}
+
+QFuture<TelemetryRecordsResult> SqliteTelemetryRepository::telemetryHistory(
+    const QDateTime &start, const QDateTime &end,
+    const QString &deviceId, int limit)
+{
+    return d->telemetryHistory(start, end, deviceId, limit);
 }
 
 QFuture<TelemetryRecordsResult> SqliteTelemetryRepository::telemetryBetween(

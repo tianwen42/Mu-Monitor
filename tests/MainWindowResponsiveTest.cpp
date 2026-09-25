@@ -1,5 +1,6 @@
 #include "app/AppController.h"
 #include "database/DatabaseManager.h"
+#include "database/SqliteTelemetryRepository.h"
 #include "network/SimulationDataSource.h"
 #include "auth/AuditRepository.h"
 #include "auth/AuthTypes.h"
@@ -77,7 +78,10 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
 {
     SimulationDataSource source;
     source.setSamplingInterval(1000);
-    AppController controller(&source, QStringLiteral("admin"));
+    SqliteTelemetryRepository repository(DatabaseManager::instance().databasePath());
+    QString repositoryError;
+    QVERIFY2(repository.start(&repositoryError), qPrintable(repositoryError));
+    AppController controller(&source, &repository, QStringLiteral("admin"));
     QVERIFY(controller.start());
     MainWindow window(&controller, QStringLiteral("admin"));
     window.setAttribute(Qt::WA_DontShowOnScreen);
@@ -129,7 +133,10 @@ void MainWindowResponsiveTest::stopsDevicesIndependently()
 {
     SimulationDataSource source;
     source.setSamplingInterval(1000);
-    AppController controller(&source, QStringLiteral("admin"));
+    SqliteTelemetryRepository repository(DatabaseManager::instance().databasePath());
+    QString repositoryError;
+    QVERIFY2(repository.start(&repositoryError), qPrintable(repositoryError));
+    AppController controller(&source, &repository, QStringLiteral("admin"));
     QVERIFY(controller.start());
     MainWindow window(&controller, QStringLiteral("admin"));
     window.setAttribute(Qt::WA_DontShowOnScreen);
@@ -162,12 +169,16 @@ void MainWindowResponsiveTest::stopsDevicesIndependently()
 }
 void MainWindowResponsiveTest::destroyingWindowStopsController()
 {
+    SqliteTelemetryRepository repository(DatabaseManager::instance().databasePath());
+    QString repositoryError;
+    QVERIFY2(repository.start(&repositoryError), qPrintable(repositoryError));
+
     auto *source = new SimulationDataSource;
     source->setSamplingInterval(1000);
     source->setHeartbeatInterval(1000);
 
     {
-        AppController controller(source, QStringLiteral("admin"));
+        AppController controller(source, &repository, QStringLiteral("admin"));
         QVERIFY(controller.start());
 
         auto *window = new MainWindow(&controller, QStringLiteral("admin"));
@@ -185,6 +196,7 @@ void MainWindowResponsiveTest::destroyingWindowStopsController()
     }
 
     QVERIFY(!source->isRunning());
+    repository.shutdown();
     delete source;
 }
 
