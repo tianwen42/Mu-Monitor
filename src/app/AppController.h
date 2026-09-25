@@ -1,5 +1,6 @@
 #pragma once
 
+#include "alarm/AlarmEvent.h"
 #include "core/DeviceInfo.h"
 #include "core/HeartbeatRecord.h"
 #include "core/TelemetryRecord.h"
@@ -39,6 +40,9 @@ public:
     bool isDeviceOnline(const QString &deviceId) const;
     bool isDeviceCollecting(const QString &deviceId) const;
     int onlineDeviceCount() const;
+    int activeAlarmCount() const;
+    QList<AlarmEvent> activeAlarms() const;
+    bool acknowledgeAlarm(const QString &eventId);
 
     // Legacy synchronous readers retained for the current UI. New UI code must
     // use the Async methods below so SQLite work stays off the GUI thread.
@@ -91,7 +95,10 @@ signals:
     void collectionStateChanged(CollectionState state);
     void deviceStateChanged(const QString &deviceId, bool online, bool collecting);
     void onlineDeviceCountChanged(int count);
+    void alarmRaised(const AlarmEvent &event);
     void alarmRaised(const QString &deviceId, const QString &message);
+    void alarmAcknowledged(const AlarmEvent &event);
+    void alarmCleared(const AlarmEvent &event);
     void persistenceStatusChanged();
     void persistenceQueueChanged(int depth, int capacity);
     void errorOccurred(const QString &message);

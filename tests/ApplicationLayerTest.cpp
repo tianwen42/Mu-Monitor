@@ -315,6 +315,7 @@ private slots:
     void cleanupTestCase();
     void monitoringServiceDrivesAlarmLifecycle();
     void monitoringServiceDrivesOfflineAlarmRecovery();
+    void appControllerForwardsAlarmLifecycle();
     void appControllerForwardsCommands();
     void controllerDestructorStopsSource();
     void controllerSubmitsPersistenceAsynchronously();
@@ -328,6 +329,8 @@ void ApplicationLayerTest::initTestCase()
     QStandardPaths::setTestModeEnabled(true);
     QCoreApplication::setOrganizationName(QStringLiteral("Mu-MonitorTests"));
     QCoreApplication::setApplicationName(QStringLiteral("ApplicationLayerTest"));
+    qRegisterMetaType<AlarmEvent>("AlarmEvent");
+    qRegisterMetaType<AlarmState>("AlarmState");
 
     const QString dataDirectory =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -416,6 +419,47 @@ void ApplicationLayerTest::monitoringServiceDrivesAlarmLifecycle()
     QCOMPARE(transitions.at(2).second, AlarmState::Cleared);
     QCOMPARE(transitions.at(3).first, AlarmState::Cleared);
     QCOMPARE(transitions.at(3).second, AlarmState::Normal);
+}
+
+void ApplicationLayerTest::appControllerForwardsAlarmLifecycle()
+{
+    const QDateTime now = utc(QStringLiteral("2026-09-25T12:00:00Z"));
+    FakeDataSource source;
+    FakeTelemetryRepository repository;
+    QVERIFY(repository.start());
+
+    AppController controller(&source, &repository, QStringLiteral("operator"));
+    QSignalSpy raisedSpy(
+        &controller,
+        QOverload<const AlarmEvent &>::of(&AppController::alarmRaised));
+    QSignalSpy acknowledgedSpy(&controller, &AppController::alarmAcknowledged);
+    QSignalSpy clearedSpy(&controller, &AppController::alarmCleared);
+
+    QVERIFY(controller.start());
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 86.5, now)});
+
+    QCOMPARE(raisedSpy.count(), 1);
+    const AlarmEvent raised =
+        qvariant_cast<AlarmEvent>(raisedSpy.first().constFirst());
+    QCOMPARE(raised.deviceId, QStringLiteral("DEV-001"));
+    QCOMPARE(raised.state, AlarmState::Active);
+    QCOMPARE(controller.activeAlarmCount(), 1);
+
+    QVERIFY(controller.acknowledgeAlarm(raised.eventId));
+    QCOMPARE(acknowledgedSpy.count(), 1);
+    const AlarmEvent acknowledged =
+        qvariant_cast<AlarmEvent>(acknowledgedSpy.first().constFirst());
+    QCOMPARE(acknowledged.state, AlarmState::Acknowledged);
+    QCOMPARE(acknowledged.acknowledgedBy, QStringLiteral("operator"));
+    QCOMPARE(controller.activeAlarmCount(), 1);
+
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 70.0, now.addSecs(1))});
+    QCOMPARE(clearedSpy.count(), 1);
+    QCOMPARE(qvariant_cast<AlarmEvent>(clearedSpy.first().constFirst()).state,
+             AlarmState::Cleared);
+    QCOMPARE(controller.activeAlarmCount(), 0);
 }
 
 void ApplicationLayerTest::monitoringServiceDrivesOfflineAlarmRecovery()
