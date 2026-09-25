@@ -4,7 +4,8 @@
 #include "database/DatabaseManager.h"
 #include "database/SqliteTelemetryRepository.h"
 #include "network/DeviceDataSourceFactory.h"
-#include "network/IDeviceDataSource.h"#include "ui/LoginDialog.h"
+#include "network/IDeviceDataSource.h"
+#include "ui/LoginDialog.h"
 #include "ui/mainwindow.h"
 
 #include <QApplication>
@@ -134,11 +135,9 @@ int main(int argc, char *argv[])
             DatabaseManager::instance().shutdown();
             return 1;
         }
-            DatabaseManager::instance().shutdown();
-            return 1;
-        }
 
-        AppController controller(dataSource, &telemetryRepository, currentUser);        MainWindow w(&controller, currentUser);
+        AppController controller(dataSource, &telemetryRepository, currentUser);
+        MainWindow w(&controller, currentUser);
         w.setWindowIcon(appIcon);
         w.show();
         controller.start();
