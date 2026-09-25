@@ -90,3 +90,6 @@ CMakeLists.txt.user*
 
 # Local backup files
 *.bak
+
+# Local reference project
+/参考项目/

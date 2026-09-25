@@ -15,20 +15,37 @@ $Strip = Join-Path $MingwBin "strip.exe"
 $CMakeDir = "D:\Qt\Tools\CMake_64\bin"
 $CMake = Join-Path $CMakeDir "cmake.exe"
 $NinjaDir = "D:\Qt\Tools\Ninja"
+
 $BuildDir = Join-Path $ProjectRoot ("build\script-release-" + $PID)
 $DistDir = Join-Path $ProjectRoot "dist"
 $DataDir = Join-Path $DistDir "data"
 $PortableFlag = Join-Path $DistDir "portable.flag"
-$TargetName = "Mu-Monitor"
-$ExecutableName = "$TargetName.exe"
+
+$AppTargetName = "Mu-Monitor"
+$SimulatorTargetName = "DeviceSimulator"
+$TargetNames = @($AppTargetName, $SimulatorTargetName)
+$AppExecutableName = "$AppTargetName.exe"
+$SimulatorExecutableName = "$SimulatorTargetName.exe"
 
 function Assert-PathInsideProject {
     param([Parameter(Mandatory = $true)][string]$Path)
+
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     $fullRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
     $prefix = $fullRoot.TrimEnd('\') + '\'
     if (-not $fullPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to modify path outside project: $fullPath"
+    }
+}
+
+function Assert-PathInsideDist {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullDist = [System.IO.Path]::GetFullPath($DistDir)
+    $prefix = $fullDist.TrimEnd('\') + '\'
+    if (-not $fullPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to modify path outside dist: $fullPath"
     }
 }
 
@@ -52,24 +69,9 @@ function Remove-DirectoryWithRetry {
     }
 }
 
-function Assert-ToolExists {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Required tool not found: $Path"
-    }
-}
-function Assert-PathInsideDist {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullDist = [System.IO.Path]::GetFullPath($DistDir)
-    $prefix = $fullDist.TrimEnd('\') + '\'
-    if (-not $fullPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to modify path outside dist: $fullPath"
-    }
-}
-
 function Remove-DistItem {
     param([Parameter(Mandatory = $true)][string]$RelativePath)
+
     $path = Join-Path $DistDir $RelativePath
     Assert-PathInsideDist -Path $path
     if (Test-Path -LiteralPath $path) {
@@ -77,16 +79,20 @@ function Remove-DistItem {
     }
 }
 
-Write-Host "Project root : $ProjectRoot"
-Write-Host "Build dir    : $BuildDir"
-Write-Host "Dist dir     : $DistDir"
-Write-Host "Clean data   : $CleanData"
+function Assert-ToolExists {
+    param([Parameter(Mandatory = $true)][string]$Path)
 
-function Stop-ProjectProcess {
-    $running = Get-Process -Name $TargetName -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Required tool not found: $Path"
+    }
+}
+
+function Stop-ProjectProcesses {
+    $running = Get-Process -Name $TargetNames -ErrorAction SilentlyContinue
     foreach ($process in $running) {
         $processPath = $process.Path
-        if ($processPath -and $processPath.StartsWith($ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($processPath -and $processPath.StartsWith(
+                $ProjectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             Write-Host "Stopping running project process: $processPath"
             Stop-Process -Id $process.Id -Force
         }
@@ -94,7 +100,12 @@ function Stop-ProjectProcess {
     Start-Sleep -Milliseconds 300
 }
 
-Stop-ProjectProcess
+Write-Host "Project root : $ProjectRoot"
+Write-Host "Build dir    : $BuildDir"
+Write-Host "Dist dir     : $DistDir"
+Write-Host "Clean data   : $CleanData"
+
+Stop-ProjectProcesses
 
 Assert-ToolExists -Path $CMake
 Assert-ToolExists -Path $WinDeployQt
@@ -110,19 +121,31 @@ if (Test-Path -LiteralPath $BuildDir) {
 }
 
 Write-Host "Configuring fresh Release build..."
-& $CMake -S $ProjectRoot -B $BuildDir -G Ninja "-DCMAKE_BUILD_TYPE=Release" "-DCMAKE_PREFIX_PATH=$QtRoot"
-if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
-
-Write-Host "Building $TargetName..."
-& $CMake --build $BuildDir --target $TargetName
-if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
-
-$builtExecutable = Join-Path $BuildDir $ExecutableName
-if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
-    throw "Built executable not found: $builtExecutable"
+& $CMake -S $ProjectRoot -B $BuildDir -G Ninja `
+    "-DCMAKE_BUILD_TYPE=Release" `
+    "-DCMAKE_PREFIX_PATH=$QtRoot" `
+    "-DBUILD_DEVICE_SIMULATOR=ON"
+if ($LASTEXITCODE -ne 0) {
+    throw "CMake configure failed with exit code $LASTEXITCODE"
 }
 
-Stop-ProjectProcess
+foreach ($target in $TargetNames) {
+    Write-Host "Building $target..."
+    & $CMake --build $BuildDir --target $target
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build failed for $target with exit code $LASTEXITCODE"
+    }
+}
+
+$builtApp = Join-Path $BuildDir $AppExecutableName
+$builtSimulator = Join-Path $BuildDir $SimulatorExecutableName
+foreach ($builtExecutable in @($builtApp, $builtSimulator)) {
+    if (-not (Test-Path -LiteralPath $builtExecutable -PathType Leaf)) {
+        throw "Built executable not found: $builtExecutable"
+    }
+}
+
+Stop-ProjectProcesses
 
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
@@ -135,21 +158,33 @@ if (-not (Test-Path -LiteralPath $PortableFlag -PathType Leaf)) {
     New-Item -ItemType File -Path $PortableFlag | Out-Null
 }
 
-$distExecutable = Join-Path $DistDir $ExecutableName
-Copy-Item -LiteralPath $builtExecutable -Destination $distExecutable -Force
+$distApp = Join-Path $DistDir $AppExecutableName
+$distSimulator = Join-Path $DistDir $SimulatorExecutableName
+Copy-Item -LiteralPath $builtApp -Destination $distApp -Force
+Copy-Item -LiteralPath $builtSimulator -Destination $distSimulator -Force
 
-Write-Host "Stripping release symbols from executable..."
-& $Strip --strip-unneeded $distExecutable
-if ($LASTEXITCODE -ne 0) { throw "strip failed with exit code $LASTEXITCODE" }
+Write-Host "Stripping release symbols from executables..."
+foreach ($distExecutable in @($distApp, $distSimulator)) {
+    & $Strip --strip-unneeded $distExecutable
+    if ($LASTEXITCODE -ne 0) {
+        throw "strip failed for $distExecutable with exit code $LASTEXITCODE"
+    }
+}
 
 $readme = Join-Path $ProjectRoot "README.md"
 if (Test-Path -LiteralPath $readme -PathType Leaf) {
     Copy-Item -LiteralPath $readme -Destination (Join-Path $DistDir "README.md") -Force
 }
 
-Write-Host "Running windeployqt..."
-& $WinDeployQt --release --compiler-runtime --no-translations --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler $distExecutable
-if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE" }
+Write-Host "Running windeployqt for both executables..."
+foreach ($distExecutable in @($distApp, $distSimulator)) {
+    & $WinDeployQt --release --compiler-runtime --no-translations `
+        --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler `
+        $distExecutable
+    if ($LASTEXITCODE -ne 0) {
+        throw "windeployqt failed for $distExecutable with exit code $LASTEXITCODE"
+    }
+}
 
 Write-Host "Pruning unused runtime components..."
 $unusedRuntimeItems = @(
@@ -157,7 +192,6 @@ $unusedRuntimeItems = @(
     "D3Dcompiler_47.dll",
     "dxcompiler.dll",
     "dxil.dll",
-    "Qt6Network.dll",
     "Qt6Svg.dll",
     "generic",
     "iconengines",
@@ -181,6 +215,7 @@ $requiredRuntimeItems = @(
     "Qt6Core.dll",
     "Qt6Gui.dll",
     "Qt6Widgets.dll",
+    "Qt6Network.dll",
     "Qt6Sql.dll",
     "platforms\qwindows.dll",
     "imageformats\qico.dll",
@@ -194,9 +229,17 @@ foreach ($item in $requiredRuntimeItems) {
     }
 }
 
-$distSize = (Get-ChildItem -LiteralPath $DistDir -Recurse -File | Measure-Object Length -Sum).Sum
+foreach ($distExecutable in @($distApp, $distSimulator)) {
+    if (-not (Test-Path -LiteralPath $distExecutable -PathType Leaf)) {
+        throw "Deployed executable missing: $distExecutable"
+    }
+}
+
+$distSize = (Get-ChildItem -LiteralPath $DistDir -Recurse -File |
+    Measure-Object Length -Sum).Sum
 Write-Host ""
 Write-Host "Build and deployment completed successfully."
-Write-Host "Executable : $distExecutable"
+Write-Host "Application: $distApp"
+Write-Host "Simulator  : $distSimulator"
 Write-Host "Data dir   : $DataDir"
 Write-Host ("Dist size  : {0:N2} MB" -f ($distSize / 1MB))
