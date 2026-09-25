@@ -37,13 +37,22 @@ TcpConnectionWorker::TcpConnectionWorker(QObject *parent)
     : QObject(parent)
     , m_socket(new QTcpSocket(this))
     , m_reconnectTimer(new QTimer(this))
+    , m_connectTimer(new QTimer(this))
+    , m_readTimer(new QTimer(this))
     , m_decoder(new FrameDecoder)
 {
     qRegisterMetaType<Frame>("Frame");
     qRegisterMetaType<TcpConnectionState>("TcpConnectionState");
 
     m_reconnectTimer->setSingleShot(true);
-    connect(m_reconnectTimer, &QTimer::timeout, this, &TcpConnectionWorker::reconnectNow);
+    m_connectTimer->setSingleShot(true);
+    m_readTimer->setSingleShot(true);
+    connect(m_reconnectTimer, &QTimer::timeout,
+            this, &TcpConnectionWorker::handleReconnectTimer);
+    connect(m_connectTimer, &QTimer::timeout,
+            this, &TcpConnectionWorker::handleConnectTimeout);
+    connect(m_readTimer, &QTimer::timeout,
+            this, &TcpConnectionWorker::handleReadTimeout);
     connect(m_socket, &QTcpSocket::connected, this, &TcpConnectionWorker::handleConnected);
     connect(m_socket, &QTcpSocket::disconnected,
             this, &TcpConnectionWorker::handleDisconnected);
@@ -71,7 +80,12 @@ void TcpConnectionWorker::connectToHost(const QString &host, quint16 port)
     m_host = host.trimmed();
     m_port = port;
     m_reconnectTimer->stop();
+    m_reconnectAttempt = 0;
+    startConnection();
+}
 
+void TcpConnectionWorker::startConnection()
+{
     if (m_socket->state() != QAbstractSocket::UnconnectedState) {
         m_userDisconnected = true;
         m_socket->abort();
@@ -80,6 +94,9 @@ void TcpConnectionWorker::connectToHost(const QString &host, quint16 port)
     m_userDisconnected = false;
     m_decoder->clear();
     setState(TcpConnectionState::Connecting);
+    if (m_connectTimeoutMs > 0) {
+        m_connectTimer->start(m_connectTimeoutMs);
+    }
     m_socket->connectToHost(m_host, m_port);
 }
 
@@ -87,6 +104,8 @@ void TcpConnectionWorker::disconnectFromHost()
 {
     m_userDisconnected = true;
     m_reconnectTimer->stop();
+    m_connectTimer->stop();
+    m_readTimer->stop();
     m_decoder->clear();
 
     if (m_socket->state() == QAbstractSocket::UnconnectedState) {
@@ -105,7 +124,9 @@ void TcpConnectionWorker::reconnectNow()
         return;
     }
 
-    connectToHost(m_host, m_port);
+    m_reconnectTimer->stop();
+    m_reconnectAttempt = 0;
+    startConnection();
 }
 
 void TcpConnectionWorker::shutdown()
@@ -113,6 +134,8 @@ void TcpConnectionWorker::shutdown()
     m_reconnectEnabled = false;
     m_userDisconnected = true;
     m_reconnectTimer->stop();
+    m_connectTimer->stop();
+    m_readTimer->stop();
     m_socket->abort();
     setState(TcpConnectionState::Disconnected);
 }
@@ -157,22 +180,56 @@ void TcpConnectionWorker::setReconnectEnabled(bool enabled)
 void TcpConnectionWorker::setReconnectDelayMs(int delayMs)
 {
     m_reconnectDelayMs = qMax(50, delayMs);
+    if (m_reconnectMaxDelayMs < m_reconnectDelayMs) {
+        m_reconnectMaxDelayMs = m_reconnectDelayMs;
+    }
+}
+
+void TcpConnectionWorker::setReconnectMaxDelayMs(int delayMs)
+{
+    m_reconnectMaxDelayMs = qMax(m_reconnectDelayMs, delayMs);
+}
+
+void TcpConnectionWorker::setConnectTimeoutMs(int timeoutMs)
+{
+    m_connectTimeoutMs = qMax(0, timeoutMs);
+    if (m_connectTimeoutMs == 0) {
+        m_connectTimer->stop();
+    } else if (m_socket->state() == QAbstractSocket::ConnectingState
+               || m_socket->state() == QAbstractSocket::HostLookupState) {
+        m_connectTimer->start(m_connectTimeoutMs);
+    }
+}
+
+void TcpConnectionWorker::setReadTimeoutMs(int timeoutMs)
+{
+    m_readTimeoutMs = qMax(0, timeoutMs);
+    if (m_socket->state() == QAbstractSocket::ConnectedState && m_readTimeoutMs > 0) {
+        m_readTimer->start(m_readTimeoutMs);
+    } else if (m_readTimeoutMs == 0) {
+        m_readTimer->stop();
+    }
 }
 
 void TcpConnectionWorker::handleConnected()
 {
     m_userDisconnected = false;
+    m_connectTimer->stop();
     m_reconnectTimer->stop();
+    m_reconnectAttempt = 0;
+    if (m_readTimeoutMs > 0) {
+        m_readTimer->start(m_readTimeoutMs);
+    }
     setState(TcpConnectionState::Connected);
     emit connected();
 }
 
 void TcpConnectionWorker::handleDisconnected()
 {
+    m_connectTimer->stop();
+    m_readTimer->stop();
     emit disconnected();
-    if (m_userDisconnected) {
-        setState(TcpConnectionState::Disconnected);
-    }
+    scheduleReconnect();
 }
 
 void TcpConnectionWorker::handleSocketError()
@@ -184,8 +241,7 @@ void TcpConnectionWorker::handleSocketError()
 
 void TcpConnectionWorker::handleSocketStateChanged()
 {
-    if (m_socket->state() == QAbstractSocket::UnconnectedState
-        && !m_userDisconnected) {
+    if (m_socket->state() == QAbstractSocket::UnconnectedState) {
         scheduleReconnect();
     }
 }
@@ -195,8 +251,46 @@ void TcpConnectionWorker::handleReadyRead()
     if (!m_socket) {
         return;
     }
+    if (m_readTimeoutMs > 0) {
+        m_readTimer->start(m_readTimeoutMs);
+    }
     m_decoder->appendData(m_socket->readAll());
     processDecoderEvents();
+}
+
+void TcpConnectionWorker::handleConnectTimeout()
+{
+    if (m_socket->state() != QAbstractSocket::ConnectingState
+        && m_socket->state() != QAbstractSocket::HostLookupState) {
+        return;
+    }
+
+    emit errorOccurred(QStringLiteral("TCP 连接超时：%1:%2（%3 ms）")
+                           .arg(m_host)
+                           .arg(m_port)
+                           .arg(m_connectTimeoutMs));
+    m_socket->abort();
+    scheduleReconnect();
+}
+
+void TcpConnectionWorker::handleReadTimeout()
+{
+    if (m_socket->state() != QAbstractSocket::ConnectedState) {
+        return;
+    }
+
+    emit errorOccurred(QStringLiteral("TCP 接收超时：%1 ms 内未收到数据")
+                           .arg(m_readTimeoutMs));
+    m_socket->abort();
+    scheduleReconnect();
+}
+
+void TcpConnectionWorker::handleReconnectTimer()
+{
+    if (!m_userDisconnected && !m_host.isEmpty()
+        && m_socket->state() == QAbstractSocket::UnconnectedState) {
+        startConnection();
+    }
 }
 
 void TcpConnectionWorker::processDecoderEvents()
@@ -223,11 +317,24 @@ void TcpConnectionWorker::setState(TcpConnectionState state)
 void TcpConnectionWorker::scheduleReconnect()
 {
     if (!m_reconnectEnabled || m_userDisconnected || m_host.isEmpty()
-        || m_socket->state() != QAbstractSocket::UnconnectedState
-        || m_reconnectTimer->isActive()) {
+        || m_socket->state() != QAbstractSocket::UnconnectedState) {
+        if (m_socket->state() == QAbstractSocket::UnconnectedState
+            && m_state != TcpConnectionState::Disconnected) {
+            setState(TcpConnectionState::Disconnected);
+        }
+        return;
+    }
+    if (m_reconnectTimer->isActive()) {
         return;
     }
 
+    const int exponent = qMin(m_reconnectAttempt, 20);
+    const qint64 calculatedDelay = static_cast<qint64>(m_reconnectDelayMs) << exponent;
+    const int delayMs = static_cast<int>(
+        qMin<qint64>(m_reconnectMaxDelayMs, calculatedDelay));
+    ++m_reconnectAttempt;
+
     setState(TcpConnectionState::Reconnecting);
-    m_reconnectTimer->start(m_reconnectDelayMs);
+    emit reconnectScheduled(delayMs, m_reconnectAttempt);
+    m_reconnectTimer->start(delayMs);
 }

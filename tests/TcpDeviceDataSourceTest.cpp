@@ -31,6 +31,10 @@ private slots:
     void rejectsBadCrcAndContinues();
     void sendsFrameOverTcp();
     void reconnectsAfterPeerDisconnect();
+    void readTimeoutDisconnectsAndSignalsError();
+    void reconnectBackoffIsExponentialAndCapped();
+    void manualDisconnectSuppressesReconnect();
+    void timeoutSettingsAreBounded();
 };
 
 void TcpDeviceDataSourceTest::receivesFramedData()
@@ -176,6 +180,90 @@ void TcpDeviceDataSourceTest::reconnectsAfterPeerDisconnect()
 
     source.disconnectFromDevice();
     QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Disconnected, 2000);
+}
+
+void TcpDeviceDataSourceTest::readTimeoutDisconnectsAndSignalsError()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    TcpDeviceDataSource source;
+    source.setReconnectEnabled(false);
+    source.setReadTimeoutMs(150);
+    QSignalSpy errorSpy(&source, &TcpDeviceDataSource::errorOccurred);
+
+    source.connectToDevice(QStringLiteral("127.0.0.1"), server.serverPort());
+    QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 2000);
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Connected, 2000);
+
+    QTRY_VERIFY_WITH_TIMEOUT(!errorSpy.isEmpty(), 1500);
+    QVERIFY(errorSpy.takeFirst().at(0).toString().contains(QStringLiteral("接收超时")));
+    QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Disconnected, 1000);
+}
+
+void TcpDeviceDataSourceTest::reconnectBackoffIsExponentialAndCapped()
+{
+    QTcpServer portReservation;
+    QVERIFY(portReservation.listen(QHostAddress::LocalHost, 0));
+    const quint16 closedPort = portReservation.serverPort();
+    portReservation.close();
+
+    TcpDeviceDataSource source;
+    source.setReconnectDelayMs(50);
+    source.setReconnectMaxDelayMs(200);
+    source.setConnectTimeoutMs(100);
+    QSignalSpy reconnectSpy(&source, &TcpDeviceDataSource::reconnectScheduled);
+
+    source.connectToDevice(QStringLiteral("127.0.0.1"), closedPort);
+    QTRY_VERIFY_WITH_TIMEOUT(reconnectSpy.count() >= 4, 3000);
+
+    QCOMPARE(reconnectSpy.at(0).at(0).toInt(), 50);
+    QCOMPARE(reconnectSpy.at(1).at(0).toInt(), 100);
+    QCOMPARE(reconnectSpy.at(2).at(0).toInt(), 200);
+    QCOMPARE(reconnectSpy.at(3).at(0).toInt(), 200);
+    QCOMPARE(reconnectSpy.at(3).at(1).toInt(), 4);
+
+    source.disconnectFromDevice();
+    QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Disconnected, 1000);
+}
+
+void TcpDeviceDataSourceTest::manualDisconnectSuppressesReconnect()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    TcpDeviceDataSource source;
+    source.setReconnectDelayMs(80);
+    source.connectToDevice(QStringLiteral("127.0.0.1"), server.serverPort());
+    QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 2000);
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Connected, 2000);
+
+    source.disconnectFromDevice();
+    QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Disconnected, 1000);
+    QTest::qWait(250);
+    QVERIFY(!server.hasPendingConnections());
+}
+
+void TcpDeviceDataSourceTest::timeoutSettingsAreBounded()
+{
+    TcpDeviceDataSource source;
+    QCOMPARE(source.reconnectDelayMs(), TcpConnectionWorker::kDefaultReconnectDelayMs);
+    QCOMPARE(source.reconnectMaxDelayMs(), TcpConnectionWorker::kDefaultReconnectMaxDelayMs);
+    QCOMPARE(source.connectTimeoutMs(), TcpConnectionWorker::kDefaultConnectTimeoutMs);
+    QCOMPARE(source.readTimeoutMs(), TcpConnectionWorker::kDefaultReadTimeoutMs);
+
+    source.setReconnectDelayMs(10);
+    source.setReconnectMaxDelayMs(-1);
+    source.setConnectTimeoutMs(-1);
+    source.setReadTimeoutMs(0);
+    QCOMPARE(source.reconnectDelayMs(), 50);
+    QCOMPARE(source.reconnectMaxDelayMs(), 50);
+    QCOMPARE(source.connectTimeoutMs(), 0);
+    QCOMPARE(source.readTimeoutMs(), 0);
 }
 
 QTEST_MAIN(TcpDeviceDataSourceTest)

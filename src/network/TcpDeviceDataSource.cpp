@@ -26,6 +26,8 @@ TcpDeviceDataSource::TcpDeviceDataSource(QObject *parent)
             this, &TcpDeviceDataSource::errorOccurred, Qt::QueuedConnection);
     connect(m_worker, &TcpConnectionWorker::protocolErrorOccurred,
             this, &TcpDeviceDataSource::protocolErrorOccurred, Qt::QueuedConnection);
+    connect(m_worker, &TcpConnectionWorker::reconnectScheduled,
+            this, &TcpDeviceDataSource::reconnectScheduled, Qt::QueuedConnection);
     connect(m_worker, &TcpConnectionWorker::stateChanged, this,
             [this](TcpConnectionState state) {
                 m_state.store(state);
@@ -70,6 +72,21 @@ bool TcpDeviceDataSource::isReconnectEnabled() const
 int TcpDeviceDataSource::reconnectDelayMs() const
 {
     return m_reconnectDelayMs.load();
+}
+
+int TcpDeviceDataSource::reconnectMaxDelayMs() const
+{
+    return m_reconnectMaxDelayMs.load();
+}
+
+int TcpDeviceDataSource::connectTimeoutMs() const
+{
+    return m_connectTimeoutMs.load();
+}
+
+int TcpDeviceDataSource::readTimeoutMs() const
+{
+    return m_readTimeoutMs.load();
 }
 
 void TcpDeviceDataSource::connectToDevice(const QString &host, quint16 port)
@@ -129,10 +146,49 @@ void TcpDeviceDataSource::setReconnectDelayMs(int delayMs)
 {
     const int boundedDelay = qMax(50, delayMs);
     m_reconnectDelayMs.store(boundedDelay);
+    if (m_reconnectMaxDelayMs.load() < boundedDelay) {
+        m_reconnectMaxDelayMs.store(boundedDelay);
+    }
     QMetaObject::invokeMethod(
         m_worker,
         [worker = m_worker, boundedDelay]() {
             worker->setReconnectDelayMs(boundedDelay);
+        },
+        Qt::QueuedConnection);
+}
+
+void TcpDeviceDataSource::setReconnectMaxDelayMs(int delayMs)
+{
+    const int boundedDelay = qMax(m_reconnectDelayMs.load(), delayMs);
+    m_reconnectMaxDelayMs.store(boundedDelay);
+    QMetaObject::invokeMethod(
+        m_worker,
+        [worker = m_worker, boundedDelay]() {
+            worker->setReconnectMaxDelayMs(boundedDelay);
+        },
+        Qt::QueuedConnection);
+}
+
+void TcpDeviceDataSource::setConnectTimeoutMs(int timeoutMs)
+{
+    const int boundedTimeout = qMax(0, timeoutMs);
+    m_connectTimeoutMs.store(boundedTimeout);
+    QMetaObject::invokeMethod(
+        m_worker,
+        [worker = m_worker, boundedTimeout]() {
+            worker->setConnectTimeoutMs(boundedTimeout);
+        },
+        Qt::QueuedConnection);
+}
+
+void TcpDeviceDataSource::setReadTimeoutMs(int timeoutMs)
+{
+    const int boundedTimeout = qMax(0, timeoutMs);
+    m_readTimeoutMs.store(boundedTimeout);
+    QMetaObject::invokeMethod(
+        m_worker,
+        [worker = m_worker, boundedTimeout]() {
+            worker->setReadTimeoutMs(boundedTimeout);
         },
         Qt::QueuedConnection);
 }
