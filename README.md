@@ -183,7 +183,7 @@ cmake --build build --target Mu-Monitor
 .\build\Mu-Monitor.exe
 ```
 
-默认数据源为进程内模拟器。将 `QSettings` 中的 `dataSource/type` 设置为 `tcp` 后，可以使用 TCP 数据源连接 `DeviceSimulator`。
+打开“设置 -> 连接”页面，可以选择“内置模拟数据”或“TCP 设备”。选择 TCP 后填写模拟器地址和端口并保存，重启 Mu-Monitor 后生效。
 
 数据源配置键：
 
@@ -326,12 +326,36 @@ viewer
 
 脚本会：
 
-1. 检查并停止工作区内的 Mu-Monitor 进程
+1. 检查并停止工作区内的 Mu-Monitor 和 DeviceSimulator 进程
 2. 清理脚本专用构建目录并重新配置 Release
-3. 编译 Mu-Monitor
-4. 更新 `dist` 中的可执行文件和 Qt 运行时
+3. 编译 Mu-Monitor 和 DeviceSimulator
+4. 更新 `dist` 中的两个可执行文件和 Qt 运行时
 5. 保留 `dist/data`、备份和日志
 6. 创建或保留 `dist/portable.flag`
+
+部署后的目录包含：
+
+```text
+dist/
+  Mu-Monitor.exe
+  DeviceSimulator.exe
+  Qt6Core.dll
+  Qt6Gui.dll
+  Qt6Widgets.dll
+  Qt6Network.dll
+  Qt6Sql.dll
+  platforms/
+  sqldrivers/
+  portable.flag
+  data/
+```
+
+运行顺序：
+
+```powershell
+.\dist\DeviceSimulator.exe
+.\dist\Mu-Monitor.exe
+```
 
 默认部署不会清理数据库。只有明确需要重置便携数据时才使用：
 
@@ -343,7 +367,7 @@ viewer
 
 - 告警历史目前使用内存仓储，尚未持久化到 SQLite。
 - 告警确认和清除信号尚未完整接入 UI。
-- `SettingsDialog` 尚未完整接入统一数据源配置。
+- 数据源配置修改后需要重启 Mu-Monitor 才能重新创建数据源。
 - UI 仍保留部分兼容性的同步历史查询入口。
 - 尚未完成真实设备长期现场运行测试。
 - QXlsx 会产生 Qt GuiPrivate 第三方 CMake 警告，不影响构建和测试。

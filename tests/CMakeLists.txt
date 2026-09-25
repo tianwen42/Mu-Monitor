@@ -173,6 +173,8 @@ mu_add_test(MainWindowResponsiveTest
     ../src/core/TelemetrySample.cpp
     ../src/core/TelemetrySample.h
     ../src/core/HeartbeatRecord.h
+    ../src/config/DataSourceConfig.cpp
+    ../src/config/DataSourceConfig.h
     ../src/database/DataDirectory.cpp
     ../src/database/DataDirectory.h
     ../src/database/DatabaseManager.cpp
