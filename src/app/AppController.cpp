@@ -449,7 +449,6 @@ void AppController::persistAlarm(const QString &deviceId, const QString &message
         QStringLiteral("WARN"), QStringLiteral("alarm"),
         QStringLiteral("%1 %2").arg(deviceId, message));
 }
-<<<<<<< HEAD
 
 void AppController::handleTelemetryBatchCompleted(
     quint64 requestId, int insertedCount, const QString &error)
@@ -501,5 +500,3 @@ void AppController::handleRepositoryError(const QString &message)
     emit persistenceStatusChanged();
     emit errorOccurred(message);
 }
-=======
->>>>>>> 45e7904 (feat: 接入告警引擎到监控服务)
