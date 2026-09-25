@@ -140,7 +140,9 @@ int main(int argc, char *argv[])
         MainWindow w(&controller, currentUser);
         w.setWindowIcon(appIcon);
         w.show();
-        controller.start();
+        if (settings.value(QStringLiteral("general/autoStartCollection"), true).toBool()) {
+            controller.start();
+        }
         exitCode = QApplication::exec();
 
         // GUI/命令处理先停止，随后排空数据库队列并关闭工作线程。

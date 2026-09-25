@@ -4,6 +4,8 @@
 #include "alarm/AlarmRule.h"
 #include "network/IDeviceDataSource.h"
 
+#include <QSettings>
+
 #include <chrono>
 
 namespace {
@@ -19,24 +21,39 @@ void configureDefaultAlarmRules(AlarmEngine *engine)
         return;
     }
 
+    const QSettings settings;
+    const double temperatureThreshold = qBound(
+        0.0, settings.value(QStringLiteral("alarm/temperatureThreshold"), 80.0).toDouble(),
+        300.0);
+    const double pressureThreshold = qBound(
+        0.0, settings.value(QStringLiteral("alarm/pressureThreshold"), 1.8).toDouble(),
+        100.0);
+    const int offlineTimeoutSec = qBound(
+        1, settings.value(QStringLiteral("alarm/offlineTimeoutSec"), 5).toInt(), 3600);
+    const int activationDelaySec = qBound(
+        0, settings.value(QStringLiteral("alarm/activationDelaySec"), 0).toInt(), 3600);
+
     AlarmRule temperature;
     temperature.ruleId = QStringLiteral("temperature-high");
     temperature.type = AlarmRuleType::HighThreshold;
     temperature.measurement = MeasurementType::Temperature;
-    temperature.threshold = 80.0;
+    temperature.threshold = temperatureThreshold;
+    temperature.activationDelay = std::chrono::seconds(activationDelaySec);
     temperature.severity = AlarmSeverity::Warning;
 
     AlarmRule pressure;
     pressure.ruleId = QStringLiteral("pressure-high");
     pressure.type = AlarmRuleType::HighThreshold;
     pressure.measurement = MeasurementType::Pressure;
-    pressure.threshold = 1.8;
+    pressure.threshold = pressureThreshold;
+    pressure.activationDelay = std::chrono::seconds(activationDelaySec);
     pressure.severity = AlarmSeverity::Warning;
 
     AlarmRule offline;
     offline.ruleId = QStringLiteral("device-offline");
     offline.type = AlarmRuleType::Offline;
-    offline.offlineTimeout = std::chrono::seconds(5);
+    offline.offlineTimeout = std::chrono::seconds(offlineTimeoutSec);
+    offline.activationDelay = std::chrono::seconds(activationDelaySec);
     offline.severity = AlarmSeverity::Critical;
 
     engine->setRules({temperature, pressure, offline});

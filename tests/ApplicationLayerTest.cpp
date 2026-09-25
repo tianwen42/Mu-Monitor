@@ -11,6 +11,7 @@
 #include <QPromise>
 #include <QSharedPointer>
 #include <QSignalSpy>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTest>
 #include <QTimer>
@@ -316,6 +317,7 @@ private slots:
     void monitoringServiceDrivesAlarmLifecycle();
     void monitoringServiceDrivesOfflineAlarmRecovery();
     void appControllerForwardsAlarmLifecycle();
+    void alarmRulesUsePersistedSettings();
     void appControllerForwardsCommands();
     void controllerDestructorStopsSource();
     void controllerSubmitsPersistenceAsynchronously();
@@ -419,6 +421,37 @@ void ApplicationLayerTest::monitoringServiceDrivesAlarmLifecycle()
     QCOMPARE(transitions.at(2).second, AlarmState::Cleared);
     QCOMPARE(transitions.at(3).first, AlarmState::Cleared);
     QCOMPARE(transitions.at(3).second, AlarmState::Normal);
+}
+
+void ApplicationLayerTest::alarmRulesUsePersistedSettings()
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("alarm/temperatureThreshold"), 95.0);
+    settings.setValue(QStringLiteral("alarm/pressureThreshold"), 3.0);
+    settings.setValue(QStringLiteral("alarm/offlineTimeoutSec"), 20);
+    settings.setValue(QStringLiteral("alarm/activationDelaySec"), 0);
+    settings.sync();
+
+    const QDateTime now = utc(QStringLiteral("2026-09-25T13:00:00Z"));
+    FakeDataSource source;
+    MonitoringService service(&source);
+    service.setDevices({makeDevice(QStringLiteral("DEV-001"))});
+
+    QList<AlarmEvent> raised;
+    connect(&service,
+            QOverload<const AlarmEvent &>::of(&MonitoringService::alarmRaised),
+            this, [&raised](const AlarmEvent &event) { raised.append(event); });
+    QVERIFY(service.start());
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 90.0, now)});
+    QCOMPARE(raised.size(), 0);
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 96.0, now.addSecs(1))});
+    QCOMPARE(raised.size(), 1);
+    QCOMPARE(raised.constFirst().threshold, 95.0);
+
+    settings.remove(QStringLiteral("alarm"));
+    settings.sync();
 }
 
 void ApplicationLayerTest::appControllerForwardsAlarmLifecycle()

@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QDateTimeEdit>
+#include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -44,17 +45,22 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     connect(m_categoryList, &QListWidget::currentRowChanged,
             m_pageStack, &QStackedWidget::setCurrentIndex);
     connect(m_buttonBox, &QDialogButtonBox::accepted, this, [this]() {
-        if (saveDataSourceSettings()) {
+        if (saveGeneralSettings() && saveAlarmSettings()
+            && saveDataSourceSettings()) {
+            m_statusLabel->setText(QStringLiteral("设置已保存；连接、启动页面和告警阈值将在重启后生效。"));
             accept();
         }
     });
     connect(m_buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_buttonBox->button(QDialogButtonBox::Apply), &QPushButton::clicked,
             this, [this]() {
-                saveDataSourceSettings();
+                if (saveGeneralSettings() && saveAlarmSettings()
+                    && saveDataSourceSettings()) {
+                    m_statusLabel->setText(QStringLiteral("设置已保存；连接、启动页面和告警阈值将在重启后生效。"));
+                }
             });
     m_statusLabel->setText(
-        QStringLiteral("数据源配置可在“连接”页面修改，其他设置将在后续阶段接入。"));
+        QStringLiteral("常规、告警和连接设置会自动写入本地配置。"));
 
     m_categoryList->setCurrentRow(0);
 }
@@ -115,25 +121,31 @@ void SettingsDialog::setupPages()
         return page;
     };
 
-    auto disableUntilImplemented = [](const QList<QWidget *> &widgets) {
-        for (QWidget *widget : widgets) {
-            widget->setEnabled(false);
-            widget->setToolTip(QStringLiteral("开发中，将在后续阶段接入。"));
-        }
-    };
+    const QSettings generalSettings;
     QWidget *generalPage = createFormPage();
     auto *generalForm = qobject_cast<QFormLayout *>(generalPage->layout());
-    auto *languageCombo = new QComboBox;
-    languageCombo->addItems({QStringLiteral("简体中文"), QStringLiteral("English")});
-    auto *startPageCombo = new QComboBox;
-    startPageCombo->addItems({QStringLiteral("总览"), QStringLiteral("设备管理"), QStringLiteral("实时监控")});
-    auto *autoStartCheck = new QCheckBox(QStringLiteral("程序启动后自动开始采集"));
-    auto *confirmExitCheck = new QCheckBox(QStringLiteral("退出前弹出确认"));
-    generalForm->addRow(QStringLiteral("界面语言"), languageCombo);
-    generalForm->addRow(QStringLiteral("启动页面"), startPageCombo);
-    generalForm->addRow(QString(), autoStartCheck);
-    generalForm->addRow(QString(), confirmExitCheck);
-    disableUntilImplemented({languageCombo, startPageCombo, autoStartCheck, confirmExitCheck});
+    m_startPageCombo = new QComboBox;
+    m_startPageCombo->setObjectName(QStringLiteral("startPageCombo"));
+    m_startPageCombo->addItems({
+        QStringLiteral("总览"),
+        QStringLiteral("实时监控"),
+        QStringLiteral("告警中心"),
+        QStringLiteral("历史数据"),
+    });
+    m_startPageCombo->setCurrentIndex(
+        qBound(0, generalSettings.value(QStringLiteral("general/startPage"), 0).toInt(),
+               m_startPageCombo->count() - 1));
+    m_autoStartCheck = new QCheckBox(QStringLiteral("程序启动后自动开始采集"));
+    m_autoStartCheck->setObjectName(QStringLiteral("autoStartCollectionCheck"));
+    m_autoStartCheck->setChecked(
+        generalSettings.value(QStringLiteral("general/autoStartCollection"), true).toBool());
+    m_confirmExitCheck = new QCheckBox(QStringLiteral("从托盘退出前弹出确认"));
+    m_confirmExitCheck->setObjectName(QStringLiteral("confirmExitCheck"));
+    m_confirmExitCheck->setChecked(
+        generalSettings.value(QStringLiteral("general/confirmExit"), true).toBool());
+    generalForm->addRow(QStringLiteral("启动页面"), m_startPageCombo);
+    generalForm->addRow(QString(), m_autoStartCheck);
+    generalForm->addRow(QString(), m_confirmExitCheck);
     addPage(QStringLiteral("常规"), appStyle->standardIcon(QStyle::SP_FileDialogDetailedView), generalPage);
 
     QWidget *connectionPage = createFormPage();
@@ -234,40 +246,21 @@ void SettingsDialog::setupPages()
 
     addPage(QStringLiteral("连接"), appStyle->standardIcon(QStyle::SP_DriveNetIcon), connectionPage);
 
-    QWidget *storagePage = createFormPage();
-    auto *storageForm = qobject_cast<QFormLayout *>(storagePage->layout());
-    QString defaultDbPath = DatabaseManager::instance().databasePath();
-    if (defaultDbPath.isEmpty()) {
-        defaultDbPath = QStandardPaths::writableLocation(
-                            QStandardPaths::AppLocalDataLocation)
-            + QStringLiteral("/database/mu-monitor.db");
-    }
-    auto *databasePathEdit = new QLineEdit(defaultDbPath);
-    databasePathEdit->setObjectName(QStringLiteral("databasePathLineEdit"));
-    auto *browseButton = new QPushButton(QStringLiteral("浏览..."));
-    auto *retentionSpin = new QSpinBox;
-    retentionSpin->setRange(1, 3650);
-    retentionSpin->setValue(180);
-    retentionSpin->setSuffix(QStringLiteral(" 天"));
-    auto *autoCleanupCheck = new QCheckBox(QStringLiteral("自动清理过期数据"));
-    connect(browseButton, &QPushButton::clicked, this, [this, databasePathEdit]() {
-        const QString path = QFileDialog::getSaveFileName(
-            this, QStringLiteral("选择数据库文件"), databasePathEdit->text(),
-            QStringLiteral("SQLite Database (*.db *.sqlite);;All Files (*)"));
-        if (!path.isEmpty()) {
-            databasePathEdit->setText(path);
-        }
-    });
-    storageForm->addRow(QStringLiteral("数据库路径"), databasePathEdit);
-    storageForm->addRow(QString(), browseButton);
-    storageForm->addRow(QStringLiteral("数据保留"), retentionSpin);
-    storageForm->addRow(QString(), autoCleanupCheck);
-    disableUntilImplemented({databasePathEdit, browseButton, retentionSpin, autoCleanupCheck});
-    addPage(QStringLiteral("数据存储"), appStyle->standardIcon(QStyle::SP_DriveHDIcon), storagePage);
     QWidget *accountPage = new QWidget;
     auto *accountLayout = new QVBoxLayout(accountPage);
     accountLayout->setContentsMargins(24, 24, 24, 24);
     accountLayout->setSpacing(12);
+
+    auto *databasePathLabel = new QLabel(QStringLiteral("当前数据库"), accountPage);
+    databasePathLabel->setObjectName(QStringLiteral("databasePathLabel"));
+    auto *databasePathEdit = new QLineEdit(
+        DatabaseManager::instance().databasePath(), accountPage);
+    databasePathEdit->setObjectName(QStringLiteral("databasePathLineEdit"));
+    databasePathEdit->setReadOnly(true);
+    databasePathEdit->setToolTip(
+        QStringLiteral("数据库路径由数据目录配置决定，不能从设置窗口直接修改。"));
+    accountLayout->addWidget(databasePathLabel);
+    accountLayout->addWidget(databasePathEdit);
 
     const QString actorUsername = qApp
         ? qApp->property(Auth::CurrentUserProperty).toString().trimmed()
@@ -337,37 +330,53 @@ void SettingsDialog::setupPages()
 
     QWidget *alarmPage = createFormPage();
     auto *alarmForm = qobject_cast<QFormLayout *>(alarmPage->layout());
-    auto *soundCheck = new QCheckBox(QStringLiteral("启用告警声音"));
-    auto *popupCheck = new QCheckBox(QStringLiteral("弹窗提示严重告警"));
-    auto *temperatureThresholdSpin = new QSpinBox;
-    temperatureThresholdSpin->setRange(0, 300);
-    temperatureThresholdSpin->setValue(80);
-    temperatureThresholdSpin->setSuffix(QStringLiteral(" °C"));
-    auto *debounceSpin = new QSpinBox;
-    debounceSpin->setRange(0, 3600);
-    debounceSpin->setValue(3);
-    debounceSpin->setSuffix(QStringLiteral(" s"));
-    alarmForm->addRow(QString(), soundCheck);
-    alarmForm->addRow(QString(), popupCheck);
-    alarmForm->addRow(QStringLiteral("温度阈值"), temperatureThresholdSpin);
-    alarmForm->addRow(QStringLiteral("抖动过滤"), debounceSpin);
-    disableUntilImplemented({soundCheck, popupCheck, temperatureThresholdSpin, debounceSpin});
+    m_alarmSoundCheck = new QCheckBox(QStringLiteral("启用告警声音"));
+    m_alarmSoundCheck->setObjectName(QStringLiteral("alarmSoundCheck"));
+    m_alarmSoundCheck->setChecked(
+        generalSettings.value(QStringLiteral("alarm/soundEnabled"), true).toBool());
+    m_alarmPopupCheck = new QCheckBox(QStringLiteral("严重告警时显示托盘提示"));
+    m_alarmPopupCheck->setObjectName(QStringLiteral("alarmPopupCheck"));
+    m_alarmPopupCheck->setChecked(
+        generalSettings.value(QStringLiteral("alarm/popupEnabled"), true).toBool());
+
+    m_temperatureThresholdSpin = new QDoubleSpinBox;
+    m_temperatureThresholdSpin->setObjectName(QStringLiteral("alarmTemperatureThresholdSpin"));
+    m_temperatureThresholdSpin->setRange(0.0, 300.0);
+    m_temperatureThresholdSpin->setDecimals(1);
+    m_temperatureThresholdSpin->setValue(
+        generalSettings.value(QStringLiteral("alarm/temperatureThreshold"), 80.0).toDouble());
+    m_temperatureThresholdSpin->setSuffix(QStringLiteral(" °C"));
+
+    m_pressureThresholdSpin = new QDoubleSpinBox;
+    m_pressureThresholdSpin->setObjectName(QStringLiteral("alarmPressureThresholdSpin"));
+    m_pressureThresholdSpin->setRange(0.0, 100.0);
+    m_pressureThresholdSpin->setDecimals(2);
+    m_pressureThresholdSpin->setValue(
+        generalSettings.value(QStringLiteral("alarm/pressureThreshold"), 1.8).toDouble());
+    m_pressureThresholdSpin->setSuffix(QStringLiteral(" MPa"));
+
+    m_offlineTimeoutSpin = new QSpinBox;
+    m_offlineTimeoutSpin->setObjectName(QStringLiteral("alarmOfflineTimeoutSpin"));
+    m_offlineTimeoutSpin->setRange(1, 3600);
+    m_offlineTimeoutSpin->setValue(
+        generalSettings.value(QStringLiteral("alarm/offlineTimeoutSec"), 5).toInt());
+    m_offlineTimeoutSpin->setSuffix(QStringLiteral(" s"));
+
+    m_activationDelaySpin = new QSpinBox;
+    m_activationDelaySpin->setObjectName(QStringLiteral("alarmActivationDelaySpin"));
+    m_activationDelaySpin->setRange(0, 3600);
+    m_activationDelaySpin->setValue(
+        generalSettings.value(QStringLiteral("alarm/activationDelaySec"), 0).toInt());
+    m_activationDelaySpin->setSuffix(QStringLiteral(" s"));
+
+    alarmForm->addRow(QStringLiteral("温度上限"), m_temperatureThresholdSpin);
+    alarmForm->addRow(QStringLiteral("压力上限"), m_pressureThresholdSpin);
+    alarmForm->addRow(QStringLiteral("离线超时"), m_offlineTimeoutSpin);
+    alarmForm->addRow(QStringLiteral("触发延迟"), m_activationDelaySpin);
+    alarmForm->addRow(QString(), m_alarmSoundCheck);
+    alarmForm->addRow(QString(), m_alarmPopupCheck);
     addPage(QStringLiteral("告警"), appStyle->standardIcon(QStyle::SP_MessageBoxWarning), alarmPage);
 
-    QWidget *appearancePage = createFormPage();
-    auto *appearanceForm = qobject_cast<QFormLayout *>(appearancePage->layout());
-    auto *themeCombo = new QComboBox;
-    themeCombo->addItems({QStringLiteral("系统默认"), QStringLiteral("Fusion 深色"), QStringLiteral("Fusion 浅色")});
-    auto *densityCombo = new QComboBox;
-    densityCombo->addItems({QStringLiteral("标准"), QStringLiteral("紧凑")});
-    auto *chartPointsSpin = new QSpinBox;
-    chartPointsSpin->setRange(10, 600);
-    chartPointsSpin->setValue(60);
-    appearanceForm->addRow(QStringLiteral("主题"), themeCombo);
-    appearanceForm->addRow(QStringLiteral("界面密度"), densityCombo);
-    appearanceForm->addRow(QStringLiteral("趋势点数"), chartPointsSpin);
-    disableUntilImplemented({themeCombo, densityCombo, chartPointsSpin});
-    addPage(QStringLiteral("外观"), appStyle->standardIcon(QStyle::SP_DesktopIcon), appearancePage);
 
     auto chooseExportPath = [this](const QString &description, const QString &prefix) {
         const QString defaultName = QDir::homePath()
@@ -510,6 +519,35 @@ void SettingsDialog::setupPages()
     aboutLayout->addWidget(aboutLabel);
     aboutLayout->addStretch();
     addPage(QStringLiteral("关于"), appStyle->standardIcon(QStyle::SP_MessageBoxInformation), aboutPage);
+}
+bool SettingsDialog::saveGeneralSettings()
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("general/startPage"), m_startPageCombo->currentIndex());
+    settings.setValue(QStringLiteral("general/autoStartCollection"),
+                      m_autoStartCheck->isChecked());
+    settings.setValue(QStringLiteral("general/confirmExit"), m_confirmExitCheck->isChecked());
+    settings.sync();
+    return true;
+}
+
+bool SettingsDialog::saveAlarmSettings()
+{
+    QSettings settings;
+    settings.setValue(QStringLiteral("alarm/temperatureThreshold"),
+                      m_temperatureThresholdSpin->value());
+    settings.setValue(QStringLiteral("alarm/pressureThreshold"),
+                      m_pressureThresholdSpin->value());
+    settings.setValue(QStringLiteral("alarm/offlineTimeoutSec"),
+                      m_offlineTimeoutSpin->value());
+    settings.setValue(QStringLiteral("alarm/activationDelaySec"),
+                      m_activationDelaySpin->value());
+    settings.setValue(QStringLiteral("alarm/soundEnabled"),
+                      m_alarmSoundCheck->isChecked());
+    settings.setValue(QStringLiteral("alarm/popupEnabled"),
+                      m_alarmPopupCheck->isChecked());
+    settings.sync();
+    return true;
 }
 bool SettingsDialog::saveDataSourceSettings()
 {

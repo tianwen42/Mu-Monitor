@@ -49,6 +49,8 @@ QPushButton {
 QPushButton:hover { background: #2d526f; }
 QPushButton:pressed { background: #274861; }
 QPushButton:disabled { background: #d3d9e0; color: #8a94a3; }
+QPushButton[compact="true"] { padding: 3px 7px; font-size: 12px; font-weight: 500; }
+QLabel[metadata="true"] { color: #5f6b7a; padding: 0 8px; }
 
 QFrame#overviewSelectedDevicePanel {
     background: #ffffff;
