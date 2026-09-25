@@ -84,6 +84,24 @@ mu_enable_warnings(mu_auth)
 target_include_directories(mu_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mu_auth PUBLIC Qt::Core Qt::Sql)
 
+add_library(mu_alarm STATIC
+    src/alarm/AlarmEngine.cpp
+    src/alarm/AlarmEngine.h
+    src/alarm/AlarmEvent.cpp
+    src/alarm/AlarmEvent.h
+    src/alarm/AlarmRepository.h
+    src/alarm/AlarmRule.cpp
+    src/alarm/AlarmRule.h
+    src/alarm/InMemoryAlarmRepository.cpp
+    src/alarm/InMemoryAlarmRepository.h
+    src/alarm/SqliteAlarmAdapter.h
+)
+target_include_directories(mu_alarm PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(mu_alarm PUBLIC Qt::Core)
+mu_enable_warnings(mu_alarm)
+
 option(BUILD_DEVICE_SIMULATOR "Build the standalone TCP device simulator" ON)
 if(BUILD_DEVICE_SIMULATOR)
     add_subdirectory(tools/DeviceSimulator)

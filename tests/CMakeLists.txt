@@ -147,6 +147,21 @@ target_link_libraries(CoreModelsTest PRIVATE
     Qt::Test
 )
 
+mu_add_test(AlarmEngineTest
+    AlarmEngineTest.cpp
+    ../src/core/BusinessStates.cpp
+    ../src/core/BusinessStates.h
+    ../src/core/Device.cpp
+    ../src/core/Device.h
+    ../src/core/TelemetrySample.cpp
+    ../src/core/TelemetrySample.h
+)
+target_link_libraries(AlarmEngineTest PRIVATE
+    Qt::Core
+    Qt::Test
+    mu_alarm
+)
+
 
 mu_add_test(MainWindowResponsiveTest
     MainWindowResponsiveTest.cpp
