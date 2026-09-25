@@ -119,6 +119,9 @@ qt_add_executable(Mu-Monitor
     src/database/DataDirectory.h
     src/database/DatabaseManager.cpp
     src/database/DatabaseManager.h
+    src/database/TelemetryRepository.h
+    src/database/SqliteTelemetryRepository.cpp
+    src/database/SqliteTelemetryRepository.h
     src/ui/LoginDialog.cpp
     src/ui/LoginDialog.h
     src/ui/UserManagementDialog.cpp
