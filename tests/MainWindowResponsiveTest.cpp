@@ -17,6 +17,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDockWidget>
 #include <QDir>
 #include <QFile>
 #include <QBoxLayout>
@@ -108,10 +109,16 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
     auto *alarmPanel = window.findChild<QWidget *>(QStringLiteral("overviewAlarmPanel"));
     auto *acknowledgeAlarmButton =
         window.findChild<QPushButton *>(QStringLiteral("acknowledgeAlarmButton"));
+    auto *logDock = window.findChild<QDockWidget *>(QStringLiteral("logDock"));
     QVERIFY(kpiGrid);
     QVERIFY(trendPlaceholder);
     QVERIFY(alarmPanel);
     QVERIFY(acknowledgeAlarmButton);
+    QVERIFY(logDock);
+    QVERIFY(logDock->isVisible());
+    QVERIFY(!logDock->features().testFlag(QDockWidget::DockWidgetClosable));
+    QVERIFY(logDock->maximumHeight() <= 180);
+    QCOMPARE(trendPlaceholder->minimumHeight(), 220);
     QVERIFY(kpiGrid->itemAtPosition(0, 3));
     QVERIFY(trendPlaceholder->width() > 0);
     QVERIFY(alarmPanel->width() > 0);
@@ -122,6 +129,9 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
     QCOMPARE(window.size(), QSize(960, 640));
 
     QCOMPARE(kpiGrid->property("responsiveColumns").toInt(), 2);
+    QVERIFY(logDock->isVisible());
+    QVERIFY(logDock->maximumHeight() <= 130);
+    QCOMPARE(trendPlaceholder->minimumHeight(), 120);
     QVERIFY(kpiGrid->itemAtPosition(0, 0));
     QVERIFY(kpiGrid->itemAtPosition(0, 1));
     QVERIFY(kpiGrid->itemAtPosition(1, 0));

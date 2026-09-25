@@ -197,7 +197,7 @@ void MainWindow::applyResponsiveLayout()
     }
 
     const int windowWidth = width();
-    const bool compact = windowWidth < 1120;
+    const bool compact = windowWidth < 1120 || height() < 760;
     const int centralWidth = ui->centralwidget->width() > 0
         ? ui->centralwidget->width()
         : windowWidth;
@@ -214,6 +214,11 @@ void MainWindow::applyResponsiveLayout()
         deviceDock->setMaximumWidth(maximumWidth);
         ui->devicePanel->setMinimumWidth(minimumWidth);
         ui->devicePanel->setMaximumWidth(maximumWidth);
+    }
+
+    if (auto *logDock = findChild<QDockWidget *>(QStringLiteral("logDock"))) {
+        logDock->setMinimumHeight(96);
+        logDock->setMaximumHeight(compact ? 130 : 180);
     }
 
     if (auto *lowerLayout = qobject_cast<QBoxLayout *>(ui->overviewLowerLayout)) {
@@ -248,7 +253,7 @@ void MainWindow::applyResponsiveLayout()
         }
     }
 
-    ui->trendChartPlaceholder->setMinimumHeight(compact ? 120 : 180);
+    ui->trendChartPlaceholder->setMinimumHeight(compact ? 120 : 220);
     ui->overviewAlarmPanel->setMinimumHeight(compact ? 100 : 140);
 }
 
@@ -395,20 +400,23 @@ void MainWindow::setupDocks()
     deviceDock->setWidget(ui->devicePanel);
     addDockWidget(Qt::LeftDockWidgetArea, deviceDock);
 
-    auto *logDock = new QDockWidget(QStringLiteral("运行日志"), this);
+    auto *logDock = new QDockWidget(QStringLiteral("运行日志 · 常驻"), this);
     logDock->setObjectName(QStringLiteral("logDock"));
-    logDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-    logDock->setFeatures(QDockWidget::DockWidgetMovable
-                         | QDockWidget::DockWidgetFloatable
-                         | QDockWidget::DockWidgetClosable);
+    logDock->setAllowedAreas(Qt::BottomDockWidgetArea);
+    logDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    logDock->setMinimumHeight(96);
+    logDock->setMaximumHeight(180);
     m_logOutput = new QPlainTextEdit(logDock);
     m_logOutput->setObjectName(QStringLiteral("logOutput"));
     m_logOutput->setReadOnly(true);
     m_logOutput->setMaximumBlockCount(2000);
+    m_logOutput->setMinimumHeight(64);
+    m_logOutput->setMaximumHeight(142);
     m_logOutput->setPlaceholderText(QStringLiteral("系统运行日志将在这里显示..."));
     logDock->setWidget(m_logOutput);
     addDockWidget(Qt::BottomDockWidgetArea, logDock);
-    logDock->hide();
+    logDock->show();
+    resizeDocks({logDock}, {150}, Qt::Vertical);
 
     const QList<QWidget *> oldTabs = {ui->devicesTab, ui->settingsTab};
     for (QWidget *tab : oldTabs) {
