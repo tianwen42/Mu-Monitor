@@ -81,12 +81,17 @@ MainWindow::MainWindow(AppController *controller, const QString &currentUser, QW
 
 MainWindow::~MainWindow()
 {
+    if (m_controller) {
+        QObject::disconnect(m_controller, nullptr, this, nullptr);
+        if (m_controller->connectionState() != ConnectionState::Disconnected) {
+            m_controller->stop();
+        }
+    }
     if (m_trayIcon) {
         m_trayIcon->hide();
     }
     delete ui;
 }
-
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);

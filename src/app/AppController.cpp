@@ -47,6 +47,17 @@ AppController::AppController(IDeviceDataSource *dataSource, const QString &curre
     loadDevices();
 }
 
+AppController::~AppController()
+{
+    if (!m_monitoringService) {
+        return;
+    }
+
+    QObject::disconnect(m_monitoringService, nullptr, this, nullptr);
+    if (m_dataSource && m_dataSource->isRunning()) {
+        m_monitoringService->stop();
+    }
+}
 QList<DeviceInfo> AppController::devices() const
 {
     return m_devices;

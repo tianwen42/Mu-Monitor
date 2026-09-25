@@ -43,6 +43,8 @@ qt_add_executable(Mu-Monitor
     src/network/IDeviceDataSource.h
     src/network/SimulationDataSource.cpp
     src/network/SimulationDataSource.h
+    src/network/ProtocolPayloadMapper.cpp
+    src/network/ProtocolPayloadMapper.h
     src/core/BusinessStates.cpp
     src/core/BusinessStates.h
     src/core/Device.cpp

@@ -18,6 +18,7 @@ class AppController : public QObject
 public:
     AppController(IDeviceDataSource *dataSource, const QString &currentUser,
                   QObject *parent = nullptr);
+    ~AppController() override;
 
     QList<DeviceInfo> devices() const;
     QString currentUser() const;

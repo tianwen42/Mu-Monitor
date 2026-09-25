@@ -12,6 +12,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QPixmap>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QtTest>
 
@@ -24,6 +25,7 @@ private slots:
     void cleanupTestCase();
     void reflowsOverviewAtCompactWidth();
     void stopsDevicesIndependently();
+    void destroyingWindowStopsController();
 };
 
 void MainWindowResponsiveTest::initTestCase()
@@ -140,6 +142,33 @@ void MainWindowResponsiveTest::stopsDevicesIndependently()
     deviceList->setCurrentRow(2);
     QCoreApplication::processEvents();
     QVERIFY2(stopButton->isEnabled(), "A second stopped device must not affect a third device");
+}
+void MainWindowResponsiveTest::destroyingWindowStopsController()
+{
+    auto *source = new SimulationDataSource;
+    source->setSamplingInterval(1000);
+    source->setHeartbeatInterval(1000);
+
+    {
+        AppController controller(source, QStringLiteral("admin"));
+        QVERIFY(controller.start());
+
+        auto *window = new MainWindow(&controller, QStringLiteral("admin"));
+        window->setAttribute(Qt::WA_DontShowOnScreen);
+        window->show();
+        QCoreApplication::processEvents();
+
+        QPointer<MainWindow> windowPointer(window);
+        delete window;
+        QVERIFY(windowPointer.isNull());
+        QVERIFY(!source->isRunning());
+
+        source->triggerTelemetry();
+        QCoreApplication::processEvents();
+    }
+
+    QVERIFY(!source->isRunning());
+    delete source;
 }
 QTEST_MAIN(MainWindowResponsiveTest)
 

@@ -193,3 +193,16 @@ target_link_libraries(ApplicationLayerTest PRIVATE
 set_tests_properties(ApplicationLayerTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+mu_add_test(ProtocolPayloadMapperTest
+    ProtocolPayloadMapperTest.cpp
+    ../src/core/Device.cpp
+    ../src/core/Device.h
+    ../src/core/TelemetrySample.cpp
+    ../src/core/TelemetrySample.h
+    ../src/network/ProtocolPayloadMapper.cpp
+    ../src/network/ProtocolPayloadMapper.h
+)
+target_link_libraries(ProtocolPayloadMapperTest PRIVATE
+    Qt::Core
+    Qt::Test
+)

@@ -35,6 +35,7 @@ class SimulationDataSourceTest : public QObject
 
 private slots:
     void startsStopsAndIgnoresRepeatedStart();
+    void restartAfterStopKeepsSingleTimer();
     void fixedSeedProducesDeterministicValues();
     void offlineDeviceIsExcludedFromTelemetry();
 };
@@ -66,6 +67,32 @@ void SimulationDataSourceTest::startsStopsAndIgnoresRepeatedStart()
     QCOMPARE(telemetryBatches, stoppedCount);
 }
 
+void SimulationDataSourceTest::restartAfterStopKeepsSingleTimer()
+{
+    SimulationDataSource source;
+    source.setDevices({makeDevice(QStringLiteral("DEV-001"))});
+    source.setSamplingInterval(10);
+    source.setHeartbeatInterval(1000);
+
+    int telemetryBatches = 0;
+    connect(&source, &IDeviceDataSource::telemetryGenerated,
+            this, [&telemetryBatches](const QList<TelemetrySample> &) {
+                ++telemetryBatches;
+            });
+
+    QVERIFY(source.start());
+    QTRY_VERIFY_WITH_TIMEOUT(telemetryBatches > 0, 300);
+    source.stop();
+    const int stoppedCount = telemetryBatches;
+    QTest::qWait(30);
+    QCOMPARE(telemetryBatches, stoppedCount);
+
+    QVERIFY(source.start());
+    QVERIFY(source.start());
+    QTRY_VERIFY_WITH_TIMEOUT(telemetryBatches > stoppedCount, 300);
+    source.stop();
+    QVERIFY(!source.isRunning());
+}
 void SimulationDataSourceTest::fixedSeedProducesDeterministicValues()
 {
     SimulationDataSource first;

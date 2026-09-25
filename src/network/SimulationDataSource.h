@@ -13,6 +13,7 @@ class SimulationDataSource final : public IDeviceDataSource
 
 public:
     explicit SimulationDataSource(QObject *parent = nullptr);
+    ~SimulationDataSource() override;
 
     bool start() override;
     void stop() override;

@@ -2,6 +2,7 @@
 #include "app/MonitoringService.h"
 #include "database/DatabaseManager.h"
 #include "network/IDeviceDataSource.h"
+#include "network/SimulationDataSource.h"
 
 #include <QDir>
 #include <QStandardPaths>
@@ -95,6 +96,7 @@ private slots:
     void cleanupTestCase();
     void monitoringServiceForwardsAndMarksAlarm();
     void appControllerForwardsCommands();
+    void controllerDestructorStopsSource();
 };
 
 void ApplicationLayerTest::initTestCase()
@@ -172,6 +174,21 @@ void ApplicationLayerTest::appControllerForwardsCommands()
     QCOMPARE(controller.connectionState(), ConnectionState::Disconnected);
 }
 
+void ApplicationLayerTest::controllerDestructorStopsSource()
+{
+    auto *source = new SimulationDataSource;
+    source->setSamplingInterval(1000);
+    source->setHeartbeatInterval(1000);
+
+    {
+        AppController controller(source, QStringLiteral("admin"));
+        QVERIFY(controller.start());
+        QVERIFY(source->isRunning());
+    }
+
+    QVERIFY(!source->isRunning());
+    delete source;
+}
 QTEST_GUILESS_MAIN(ApplicationLayerTest)
 
 #include "ApplicationLayerTest.moc"

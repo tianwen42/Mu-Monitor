@@ -35,6 +35,12 @@ SimulationDataSource::SimulationDataSource(QObject *parent)
             this, &SimulationDataSource::generateHeartbeat);
 }
 
+SimulationDataSource::~SimulationDataSource()
+{
+    m_running = false;
+    m_telemetryTimer.stop();
+    m_heartbeatTimer.stop();
+}
 bool SimulationDataSource::start()
 {
     if (m_running) {
