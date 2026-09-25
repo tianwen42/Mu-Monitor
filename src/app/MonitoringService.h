@@ -1,5 +1,6 @@
 #pragma once
 
+#include "alarm/AlarmEvent.h"
 #include "core/DeviceInfo.h"
 #include "core/HeartbeatRecord.h"
 #include "core/TelemetryRecord.h"
@@ -8,7 +9,9 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QTimer>
 
+class AlarmEngine;
 class IDeviceDataSource;
 
 class MonitoringService : public QObject
@@ -17,6 +20,8 @@ class MonitoringService : public QObject
 
 public:
     explicit MonitoringService(IDeviceDataSource *dataSource, QObject *parent = nullptr);
+    MonitoringService(IDeviceDataSource *dataSource, AlarmEngine *alarmEngine,
+                      QObject *parent = nullptr);
 
     void setDevices(const QList<DeviceInfo> &devices);
     QList<DeviceInfo> devices() const;
@@ -26,6 +31,11 @@ public:
     bool pauseCollection();
     bool resumeCollection();
     bool setDeviceCollection(const QString &deviceId, bool enabled);
+
+    AlarmEngine *alarmEngine() const;
+    bool acknowledgeAlarm(const QString &eventId, const QString &operatorId,
+                          const QDateTime &at = QDateTime());
+    void updateAlarmStates(const QDateTime &at = QDateTime());
 
     ConnectionState connectionState() const;
     CollectionState collectionState() const;
@@ -40,7 +50,12 @@ signals:
     void collectionStateChanged(CollectionState state);
     void deviceStateChanged(const QString &deviceId, bool online, bool collecting);
     void onlineDeviceCountChanged(int count);
+    void alarmRaised(const AlarmEvent &event);
     void alarmRaised(const QString &deviceId, const QString &message);
+    void alarmAcknowledged(const AlarmEvent &event);
+    void alarmCleared(const AlarmEvent &event);
+    void alarmStateChanged(const AlarmEvent &event, AlarmState previous,
+                           AlarmState current);
     void errorOccurred(const QString &message);
 
 private slots:
@@ -50,12 +65,15 @@ private slots:
     void handleSourceError(const QString &message);
 
 private:
+    void initializeAlarmEngine(AlarmEngine *alarmEngine);
     void setConnectionState(ConnectionState state);
     void setCollectionState(CollectionState state);
-    TelemetryRecord toTelemetryRecord(const TelemetrySample &sample, bool *isAlarm,
-                                      QString *alarmMessage) const;
+    TelemetryRecord toTelemetryRecord(const TelemetrySample &sample) const;
+    bool deviceHasActiveAlarm(const QString &deviceId) const;
 
     IDeviceDataSource *m_dataSource = nullptr;
+    AlarmEngine *m_alarmEngine = nullptr;
+    QTimer m_offlineCheckTimer;
     QList<DeviceInfo> m_devices;
     QHash<QString, DeviceInfo> m_deviceById;
     QHash<QString, bool> m_online;

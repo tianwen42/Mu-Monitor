@@ -69,10 +69,11 @@ AppController::AppController(IDeviceDataSource *dataSource,
             this, &AppController::deviceStateChanged);
     connect(m_monitoringService, &MonitoringService::onlineDeviceCountChanged,
             this, &AppController::onlineDeviceCountChanged);
-    connect(m_monitoringService, &MonitoringService::alarmRaised,
-            this, [this](const QString &deviceId, const QString &message) {
-                persistAlarm(deviceId, message);
-                emit alarmRaised(deviceId, message);
+    connect(m_monitoringService,
+            QOverload<const AlarmEvent &>::of(&MonitoringService::alarmRaised),
+            this, [this](const AlarmEvent &event) {
+                persistAlarm(event.deviceId, event.message);
+                emit alarmRaised(event.deviceId, event.message);
             });
     connect(m_monitoringService, &MonitoringService::errorOccurred,
             this, [this](const QString &message) {
@@ -448,6 +449,7 @@ void AppController::persistAlarm(const QString &deviceId, const QString &message
         QStringLiteral("WARN"), QStringLiteral("alarm"),
         QStringLiteral("%1 %2").arg(deviceId, message));
 }
+<<<<<<< HEAD
 
 void AppController::handleTelemetryBatchCompleted(
     quint64 requestId, int insertedCount, const QString &error)
@@ -499,3 +501,5 @@ void AppController::handleRepositoryError(const QString &message)
     emit persistenceStatusChanged();
     emit errorOccurred(message);
 }
+=======
+>>>>>>> 45e7904 (feat: 接入告警引擎到监控服务)
