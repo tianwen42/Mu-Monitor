@@ -33,7 +33,7 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 - SQLite 历史数据查询
 - 顶部告警中心 Tab，点击告警可定位对应设备
 - 独立 DeviceSimulator（TCP Server、4 台模拟设备、故障场景）
-- QSS 深色工业主题
+- QSS 浅色工业主题
 - CMake 构建和 MinGW 部署
 
 ## Excel 数据导出
@@ -77,8 +77,12 @@ Mu-Monitor 旨在形成一套完整的工业数据链路：
 数据库位置：
 
 ```text
-%APPDATA%\Mu-Monitor\mu-monitor.db
+<Mu-Monitor.exe 所在目录>\data\mu-monitor.db
 ```
+
+首次从旧版本升级时，如果运行目录中还没有数据库，程序会把旧的
+`%APPDATA%` 数据库快照导入到运行目录，原数据库不会被删除。重新发布时，
+`data`、`backups` 和 `logs` 目录不会被发布脚本清理。
 
 密码不会以明文保存，数据库中使用带随机盐、10 万轮迭代的 SHA-256 哈希。
 
@@ -283,6 +287,14 @@ git commit -m "feat: describe the change"
 2026-10-15 项目交付计划见：
 
 [docs/DELIVERY_PLAN.md](docs/DELIVERY_PLAN.md)
+
+技术学习路线见：
+
+[docs/LEARNING_PATH.md](docs/LEARNING_PATH.md)
+
+当前学习进度见：
+
+[docs/LEARNING_PROGRESS.md](docs/LEARNING_PROGRESS.md)
 
 ## 许可证
 

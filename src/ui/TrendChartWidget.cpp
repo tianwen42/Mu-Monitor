@@ -72,10 +72,12 @@ void TrendChartWidget::paintEvent(QPaintEvent *event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    const QRectF plot = rect().adjusted(58, 34, -62, -34);
+    const int leftPadding = qBound(44, width() / 14, 58);
+    const int rightPadding = qBound(46, width() / 14, 62);
+    const QRectF plot = rect().adjusted(leftPadding, 34, -rightPadding, -34);
     const int count = qMin(m_temperature.size(), m_pressure.size());
 
-    painter.setPen(QColor(QStringLiteral("#64748b")));
+    painter.setPen(QColor(QStringLiteral("#3f4b5b")));
     painter.setFont(QFont(QStringLiteral("Microsoft YaHei"), 9));
     painter.drawText(QRectF(plot.left(), 2, plot.width(), 20),
                      Qt::AlignLeft | Qt::AlignVCenter,
@@ -90,14 +92,14 @@ void TrendChartWidget::paintEvent(QPaintEvent *event)
     const auto pressureRange = paddedRange(m_pressure, 0.0, 3.0, 0.1);
     constexpr int divisions = 4;
 
-    painter.setPen(QPen(QColor(QStringLiteral("#334155")), 1));
+    painter.setPen(QPen(QColor(QStringLiteral("#dce1e6")), 1));
     for (int i = 0; i <= divisions; ++i) {
         const qreal y = plot.top() + plot.height() * i / divisions;
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
     }
 
     painter.setFont(QFont(QStringLiteral("Consolas"), 8));
-    painter.setPen(QColor(QStringLiteral("#38bdf8")));
+    painter.setPen(QColor(QStringLiteral("#1f6f9f")));
     for (int i = 0; i <= divisions; ++i) {
         const qreal y = plot.top() + plot.height() * i / divisions;
         const double value = temperatureRange.second - (temperatureRange.second - temperatureRange.first) * i / divisions;
@@ -105,7 +107,7 @@ void TrendChartWidget::paintEvent(QPaintEvent *event)
                          QString::number(value, 'f', 1));
     }
 
-    painter.setPen(QColor(QStringLiteral("#f59e0b")));
+    painter.setPen(QColor(QStringLiteral("#9a6700")));
     for (int i = 0; i <= divisions; ++i) {
         const qreal y = plot.top() + plot.height() * i / divisions;
         const double value = pressureRange.second - (pressureRange.second - pressureRange.first) * i / divisions;
@@ -128,10 +130,10 @@ void TrendChartWidget::paintEvent(QPaintEvent *event)
         painter.drawPath(path);
     };
 
-    drawSeries(m_temperature, temperatureRange, QColor(QStringLiteral("#38bdf8")));
-    drawSeries(m_pressure, pressureRange, QColor(QStringLiteral("#f59e0b")));
+    drawSeries(m_temperature, temperatureRange, QColor(QStringLiteral("#1f6f9f")));
+    drawSeries(m_pressure, pressureRange, QColor(QStringLiteral("#9a6700")));
 
-    painter.setPen(QColor(QStringLiteral("#64748b")));
+    painter.setPen(QColor(QStringLiteral("#3f4b5b")));
     painter.drawText(QRectF(plot.left(), plot.bottom() + 8, plot.width(), 18), Qt::AlignCenter,
                      QStringLiteral("最近 %1 个采样点").arg(count));
 }

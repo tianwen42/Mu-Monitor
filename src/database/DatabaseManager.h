@@ -15,6 +15,7 @@ public:
     static DatabaseManager &instance();
 
     bool initialize(QString *errorMessage = nullptr);
+    bool initializeAt(const QString &dataDirectory, QString *errorMessage = nullptr);
     void shutdown();
     bool validateUser(const QString &username, const QString &password);
     QString roleForUser(const QString &username);
@@ -56,6 +57,8 @@ public:
                                 QString *errorMessage = nullptr);
     bool insertLog(const QString &level, const QString &source,
                    const QString &message, QString *errorMessage = nullptr);
+    static QString runtimeDataDirectory();
+    QString dataDirectory() const;
     QString databasePath() const;
     QString lastError() const;
 
@@ -66,6 +69,9 @@ private:
     DatabaseManager();
     ~DatabaseManager();
 
+    bool configureConnection(QString *errorMessage);
+    bool importLegacyDatabase(const QString &sourcePath, QString *errorMessage);
+    QString legacyDatabasePath() const;
     bool createTables(QString *errorMessage);
     bool normalizeTimestampStorage(QString *errorMessage);
     bool normalizeTelemetryStatusStorage(QString *errorMessage);
@@ -78,6 +84,7 @@ private:
     QString tokenHash(const QString &rawToken) const;
 
     QString m_connectionName;
+    QString m_dataDirectory;
     QString m_databasePath;
     QString m_lastError;
     QSqlDatabase m_database;

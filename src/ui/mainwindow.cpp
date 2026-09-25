@@ -11,6 +11,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QAbstractSpinBox>
 #include <QBoxLayout>
 #include <QCheckBox>
 #include <QColor>
@@ -18,6 +19,7 @@
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QDateEdit>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDockWidget>
@@ -28,6 +30,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIcon>
+#include <QItemSelectionModel>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -49,6 +52,8 @@
 #include <QSizePolicy>
 #include <QWindow>
 #include <QTabWidget>
+#include <QTimeEdit>
+#include <QTableView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
@@ -138,24 +143,14 @@ void MainWindow::applyResponsiveLayout()
 
     const int windowWidth = width();
     const bool compact = windowWidth < 1120;
-    const bool veryCompact = windowWidth < 1000;
     const int centralWidth = ui->centralwidget->width() > 0
         ? ui->centralwidget->width()
         : windowWidth;
 
-    ui->appSubtitle->setVisible(!compact);
-    ui->currentUserLabel->setVisible(!veryCompact);
-
-    const QString fullUserText = ui->currentUserLabel->property("fullText").toString();
-    if (!fullUserText.isEmpty()) {
-        ui->currentUserLabel->setText(
-            veryCompact ? QStringLiteral("账号：%1").arg(m_currentUser) : fullUserText);
-    }
-
-    ui->headerLayout->setContentsMargins(compact ? 12 : 18, compact ? 6 : 12,
-                                         compact ? 12 : 18, compact ? 6 : 12);
-    ui->headerLayout->setSpacing(compact ? 8 : 12);
-    ui->headerFrame->setMinimumHeight(compact ? 64 : 76);
+    ui->appTitle->hide();
+    ui->appSubtitle->hide();
+    ui->currentUserLabel->hide();
+    ui->headerFrame->hide();
 
     if (auto *deviceDock = findChild<QDockWidget *>(QStringLiteral("deviceDock"))) {
         const int minimumWidth = compact ? 190 : 220;
@@ -167,11 +162,8 @@ void MainWindow::applyResponsiveLayout()
     }
 
     if (auto *lowerLayout = qobject_cast<QBoxLayout *>(ui->overviewLowerLayout)) {
-        const QBoxLayout::Direction direction = centralWidth >= 560
-            ? QBoxLayout::LeftToRight
-            : QBoxLayout::TopToBottom;
-        if (lowerLayout->direction() != direction) {
-            lowerLayout->setDirection(direction);
+        if (lowerLayout->direction() != QBoxLayout::TopToBottom) {
+            lowerLayout->setDirection(QBoxLayout::TopToBottom);
         }
         lowerLayout->setStretch(0, 3);
         lowerLayout->setStretch(1, 2);
@@ -214,35 +206,27 @@ void MainWindow::applyResponsiveLayout()
 
 void MainWindow::setupUi()
 {
-    // Keep the standard menu actions in code, but use only the toolbar as the visible top bar.
     menuBar()->hide();
-
-    const QIcon appIcon = QApplication::windowIcon();
-    if (!appIcon.isNull()) {
-        setWindowIcon(appIcon);
-
-        auto *brandIcon = new QLabel(ui->headerFrame);
-        brandIcon->setObjectName(QStringLiteral("appLogo"));
-        brandIcon->setAlignment(Qt::AlignCenter);
-        brandIcon->setFixedSize(52, 52);
-        brandIcon->setPixmap(appIcon.pixmap(48, 48));
-        brandIcon->setToolTip(QStringLiteral("Mu-Monitor"));
-        ui->headerLayout->insertWidget(0, brandIcon);
-    }
+    ui->appTitle->hide();
+    ui->appSubtitle->hide();
+    ui->headerFrame->hide();
     ui->alarmTitle->setText(QStringLiteral("告警记录 · 点击告警可定位设备"));
 
     const QString role = DatabaseManager::instance().roleForUser(m_currentUser);
     const QString roleText = role == QStringLiteral("admin")
         ? QStringLiteral("管理员")
         : QStringLiteral("普通用户");
-    ui->currentUserLabel->setText(
-        QStringLiteral("账号：%1（%2）").arg(m_currentUser, roleText));
-    ui->currentUserLabel->setProperty("fullText", ui->currentUserLabel->text());
-    ui->currentUserLabel->setToolTip(
+    const QString userText = QStringLiteral("用户：%1（%2）").arg(m_currentUser, roleText);
+    ui->currentUserLabel->setText(userText);
+    ui->currentUserLabel->hide();
+
+    m_userStatusLabel = new QLabel(userText, this);
+    m_userStatusLabel->setObjectName(QStringLiteral("userStatusLabel"));
+    m_userStatusLabel->setToolTip(
         QStringLiteral("登录时间：%1\n数据库：%2")
             .arg(TimeUtils::toLocalIso8601(m_loginTime),
                  DatabaseManager::instance().databasePath()));
-
+    statusBar()->addWidget(m_userStatusLabel, 1);
     auto *selectedDevicePanel = new QFrame(ui->overviewTab);
     selectedDevicePanel->setObjectName(QStringLiteral("overviewSelectedDevicePanel"));
     auto *selectedDeviceLayout = new QHBoxLayout(selectedDevicePanel);
@@ -278,12 +262,40 @@ void MainWindow::setupUi()
     selectedDeviceLayout->addLayout(selectedValueLayout);
 
     ui->overviewLayout->insertWidget(0, selectedDevicePanel);
+    auto *monitorKpiLayout = new QGridLayout(ui->monitorTab);
+    monitorKpiLayout->setObjectName(QStringLiteral("kpiLayout"));
+    monitorKpiLayout->setHorizontalSpacing(12);
+    monitorKpiLayout->setVerticalSpacing(12);
+    const QList<QWidget *> kpiCards = {
+        ui->onlineDevicesCard,
+        ui->activeAlarmsCard,
+        ui->avgTemperatureCard,
+        ui->dataPointsCard,
+    };
+    for (int i = 0; i < kpiCards.size(); ++i) {
+        ui->kpiLayout->removeWidget(kpiCards.at(i));
+        monitorKpiLayout->addWidget(kpiCards.at(i), 0, i);
+    }
+    ui->overviewLayout->removeItem(ui->kpiLayout);
+    delete ui->kpiLayout;
+    ui->kpiLayout = monitorKpiLayout;
+    ui->monitorLayout->insertLayout(0, ui->kpiLayout);
     m_model = new TelemetryTableModel(this);
     ui->telemetryTable->setModel(m_model);
     ui->telemetryTable->setShowGrid(false);
     ui->telemetryTable->verticalHeader()->setVisible(false);
     ui->telemetryTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     ui->telemetryTable->horizontalHeader()->setMinimumSectionSize(70);
+    m_deviceSearchEdit = new QLineEdit(ui->devicePanel);
+    m_deviceSearchEdit->setObjectName(QStringLiteral("deviceSearchEdit"));
+    m_deviceSearchEdit->setPlaceholderText(QStringLiteral("搜索设备编号、名称、型号或位置"));
+    m_deviceSearchEdit->setClearButtonEnabled(true);
+    ui->deviceLayout->insertWidget(1, m_deviceSearchEdit);
+    connect(m_deviceSearchEdit, &QLineEdit::textChanged,
+            this, &MainWindow::filterDeviceList);
+    ui->deviceList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    ui->deviceList->setTextElideMode(Qt::ElideRight);
+    ui->deviceList->setUniformItemSizes(true);
 
     m_trendChart = new TrendChartWidget(ui->trendChartPlaceholder);
     auto *chartLayout = new QVBoxLayout(ui->trendChartPlaceholder);
@@ -305,21 +317,23 @@ void MainWindow::setupUi()
     ui->rootLayout->setStretch(0, 0);
     ui->rootLayout->setStretch(1, 1);
     ui->overviewLayout->setStretch(0, 0);
-    ui->overviewLayout->setStretch(1, 0);
-    ui->overviewLayout->setStretch(2, 1);
+    ui->overviewLayout->setStretch(1, 1);
+    ui->monitorLayout->setStretch(0, 0);
+    ui->monitorLayout->setStretch(1, 0);
+    ui->monitorLayout->setStretch(2, 1);
     ui->trendLayout->setStretch(1, 1);
     ui->overviewAlarmLayout->setStretch(1, 1);
     ui->tableLayout->setStretch(1, 1);
     ui->mainTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     ui->telemetryTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    const QList<QFrame *> kpiCards = {
+    const QList<QFrame *> kpiCardFrames = {
         ui->onlineDevicesCard,
         ui->activeAlarmsCard,
         ui->avgTemperatureCard,
         ui->dataPointsCard,
     };
-    for (QFrame *card : kpiCards) {
+    for (QFrame *card : kpiCardFrames) {
         card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
 
@@ -334,10 +348,11 @@ void MainWindow::setupDocks()
 
     auto *deviceDock = new QDockWidget(QStringLiteral("设备列表"), this);
     deviceDock->setObjectName(QStringLiteral("deviceDock"));
-    deviceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    deviceDock->setFeatures(QDockWidget::DockWidgetMovable
-                            | QDockWidget::DockWidgetFloatable
-                            | QDockWidget::DockWidgetClosable);
+    deviceDock->setAllowedAreas(Qt::LeftDockWidgetArea);
+    deviceDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    auto *deviceTitleBar = new QWidget(deviceDock);
+    deviceTitleBar->setFixedHeight(0);
+    deviceDock->setTitleBarWidget(deviceTitleBar);
     ui->devicePanel->setParent(nullptr);
     deviceDock->setWidget(ui->devicePanel);
     addDockWidget(Qt::LeftDockWidgetArea, deviceDock);
@@ -382,6 +397,9 @@ void MainWindow::setupToolBar()
     ui->startButton->hide();
     ui->clearAlarmButton->hide();
 
+    ui->headerLayout->removeWidget(ui->connectionStatusLabel);
+    ui->connectionStatusLabel->setParent(toolBar);
+
     QAction *collectAction = new QAction(
         style()->standardIcon(QStyle::SP_MediaPlay), QStringLiteral("开始/暂停采集"), this);
     connect(collectAction, &QAction::triggered, ui->startButton, &QPushButton::click);
@@ -389,9 +407,10 @@ void MainWindow::setupToolBar()
 
     QAction *refreshAction = new QAction(
         style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新"), this);
+    refreshAction->setObjectName(QStringLiteral("refreshAction"));
     connect(refreshAction, &QAction::triggered, this, [this]() {
         restorePersistedState();
-        statusBar()->showMessage(QStringLiteral("历史数据与看板已刷新"), 2500);
+        showStatusMessage(QStringLiteral("历史数据与看板已刷新"), 2500);
     });
     toolBar->addAction(refreshAction);
 
@@ -411,10 +430,15 @@ void MainWindow::setupToolBar()
     });
     toolBar->addAction(optionsAction);
 
-    toolBar->addSeparator();
+    auto *toolbarSpacer = new QWidget(toolBar);
+    toolbarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolBar->addWidget(toolbarSpacer);
+    toolBar->addWidget(ui->connectionStatusLabel);
 
     QAction *aboutAction = new QAction(
-        style()->standardIcon(QStyle::SP_MessageBoxInformation), QStringLiteral("关于"), this);
+        style()->standardIcon(QStyle::SP_MessageBoxInformation),
+        QStringLiteral("关于 Mu-Monitor"), this);
+    aboutAction->setObjectName(QStringLiteral("aboutAction"));
     connect(aboutAction, &QAction::triggered, this, [this]() {
         AboutDialog dialog(this);
         dialog.exec();
@@ -491,35 +515,28 @@ void MainWindow::setupConnections()
     connect(ui->deviceList, &QListWidget::customContextMenuRequested, this,
             [this](const QPoint &position) {
                 QListWidgetItem *item = ui->deviceList->itemAt(position);
-                if (!item) {
+                if (!item) return;
+                showDeviceContextMenu(
+                    item->data(Qt::UserRole).toString(),
+                    ui->deviceList->viewport()->mapToGlobal(position));
+            });
+    connect(ui->telemetryTable->selectionModel(), &QItemSelectionModel::currentRowChanged,
+            this, &MainWindow::onTelemetryTableSelectionChanged);
+
+    ui->telemetryTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->telemetryTable, &QTableView::customContextMenuRequested, this,
+            [this](const QPoint &position) {
+                const QModelIndex index = ui->telemetryTable->indexAt(position);
+                if (!index.isValid() || !m_model) {
                     return;
                 }
-
-                const int index = ui->deviceList->row(item);
-                ui->deviceList->setCurrentRow(index);
-                QMenu menu(this);
-                QAction *editAction = menu.addAction(QStringLiteral("编辑设备信息"));
-                const QString deviceId = item->data(Qt::UserRole).toString();
-                const bool collecting = m_deviceCollecting.value(deviceId, false);
-
-                QAction *alarmAction = menu.addAction(QStringLiteral("查看历史报警信息"));
-                menu.addSeparator();
-                QAction *startAction = menu.addAction(QStringLiteral("开始设备采集"));
-                QAction *stopAction = menu.addAction(QStringLiteral("停止设备采集"));
-                startAction->setEnabled(m_connected && !collecting);
-                stopAction->setEnabled(m_connected && collecting);
-                QAction *selected = menu.exec(
-                    ui->deviceList->viewport()->mapToGlobal(position));
-
-                if (selected == editAction) {
-                    editDeviceInfo(index);
-                } else if (selected == alarmAction) {
-                    showDeviceAlarmHistory(index);
-                } else if (selected == startAction) {
-                    startDeviceCollection(index);
-                } else if (selected == stopAction) {
-                    stopDeviceCollection(index);
-                }
+                const QString deviceId = m_model
+                    ->index(index.row(), TelemetryTableModel::DeviceId)
+                    .data()
+                    .toString();
+                showDeviceContextMenu(
+                    deviceId,
+                    ui->telemetryTable->viewport()->mapToGlobal(position));
             });
 }
 
@@ -532,11 +549,16 @@ void MainWindow::setupHistoryPage()
     ui->historyHint->setText(
         QStringLiteral("按设备和时间范围查询 SQLite 历史数据；单次最多显示 2000 条。"));
 
-    auto *filterLayout = new QHBoxLayout;
+    auto *filterLayout = new QVBoxLayout;
     filterLayout->setSpacing(8);
+
+    auto *rangeLayout = new QHBoxLayout;
+    rangeLayout->setSpacing(6);
 
     auto *deviceLabel = new QLabel(QStringLiteral("设备"), ui->historyPanel);
     m_historyDeviceCombo = new QComboBox(ui->historyPanel);
+    m_historyDeviceCombo->setMinimumWidth(180);
+    m_historyDeviceCombo->setMaximumWidth(260);
     m_historyDeviceCombo->addItem(QStringLiteral("全部设备"), QString());
     for (int i = 0; i < m_deviceIds.size(); ++i) {
         m_historyDeviceCombo->addItem(
@@ -544,31 +566,105 @@ void MainWindow::setupHistoryPage()
             m_deviceIds.at(i));
     }
 
-    auto *startLabel = new QLabel(QStringLiteral("开始"), ui->historyPanel);
-    m_historyStartEdit = new QDateTimeEdit(
-        QDateTime::currentDateTime().addDays(-1), ui->historyPanel);
-    m_historyStartEdit->setCalendarPopup(true);
-    m_historyStartEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd'T'HH:mm:ss.zzz"));
+    auto configureDateEdit = [](QDateTimeEdit *edit) {
+        edit->setCalendarPopup(true);
+        edit->setDisplayFormat(QStringLiteral("yyyy-MM-dd"));
+        edit->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+        edit->setMinimumWidth(116);
+    };
+    auto configureTimeEdit = [](QDateTimeEdit *edit) {
+        edit->setDisplayFormat(QStringLiteral("HH:mm:ss"));
+        edit->setButtonSymbols(QAbstractSpinBox::UpDownArrows);
+        edit->setWrapping(true);
+        edit->setAccelerated(true);
+        edit->setMinimumWidth(92);
+    };
 
-    auto *endLabel = new QLabel(QStringLiteral("结束"), ui->historyPanel);
-    m_historyEndEdit = new QDateTimeEdit(QDateTime::currentDateTime(), ui->historyPanel);
-    m_historyEndEdit->setCalendarPopup(true);
-    m_historyEndEdit->setDisplayFormat(QStringLiteral("yyyy-MM-dd'T'HH:mm:ss.zzz"));
+    auto *startLabel = new QLabel(QStringLiteral("开始时间"), ui->historyPanel);
+    m_historyStartDateEdit = new QDateEdit(
+        QDate::currentDate().addDays(-1), ui->historyPanel);
+    m_historyStartDateEdit->setObjectName(QStringLiteral("historyStartDateEdit"));
+    configureDateEdit(m_historyStartDateEdit);
+
+    m_historyStartTimeEdit = new QTimeEdit(QTime::currentTime(), ui->historyPanel);
+    m_historyStartTimeEdit->setObjectName(QStringLiteral("historyStartTimeEdit"));
+    configureTimeEdit(m_historyStartTimeEdit);
+
+    auto *endLabel = new QLabel(QStringLiteral("结束时间"), ui->historyPanel);
+    m_historyEndDateEdit = new QDateEdit(QDate::currentDate(), ui->historyPanel);
+    m_historyEndDateEdit->setObjectName(QStringLiteral("historyEndDateEdit"));
+    configureDateEdit(m_historyEndDateEdit);
+
+    m_historyEndTimeEdit = new QTimeEdit(QTime::currentTime(), ui->historyPanel);
+    m_historyEndTimeEdit->setObjectName(QStringLiteral("historyEndTimeEdit"));
+    configureTimeEdit(m_historyEndTimeEdit);
+
+    rangeLayout->addWidget(deviceLabel);
+    rangeLayout->addWidget(m_historyDeviceCombo);
+    rangeLayout->addSpacing(8);
+    rangeLayout->addWidget(startLabel);
+    rangeLayout->addWidget(m_historyStartDateEdit);
+    rangeLayout->addWidget(m_historyStartTimeEdit);
+    rangeLayout->addSpacing(8);
+    rangeLayout->addWidget(endLabel);
+    rangeLayout->addWidget(m_historyEndDateEdit);
+    rangeLayout->addWidget(m_historyEndTimeEdit);
+    rangeLayout->addStretch();
+
+    auto *quickRangeLayout = new QHBoxLayout;
+    quickRangeLayout->setSpacing(6);
+    auto createQuickRangeButton = [this](const QString &text, const QString &objectName) {
+        auto *button = new QPushButton(text, ui->historyPanel);
+        button->setObjectName(objectName);
+        button->setProperty("secondary", true);
+        return button;
+    };
+
+    auto *lastHourButton = createQuickRangeButton(
+        QStringLiteral("最近 1 小时"), QStringLiteral("historyLastHourButton"));
+    auto *todayButton = createQuickRangeButton(
+        QStringLiteral("今天"), QStringLiteral("historyTodayButton"));
+    auto *last24HoursButton = createQuickRangeButton(
+        QStringLiteral("最近 24 小时"), QStringLiteral("historyLast24HoursButton"));
+    auto *last7DaysButton = createQuickRangeButton(
+        QStringLiteral("最近 7 天"), QStringLiteral("historyLast7DaysButton"));
 
     auto *queryButton = new QPushButton(QStringLiteral("查询"), ui->historyPanel);
+    queryButton->setObjectName(QStringLiteral("historyQueryButton"));
     auto *recentButton = new QPushButton(QStringLiteral("最近 1000 条"), ui->historyPanel);
+    recentButton->setProperty("secondary", true);
     m_historyCountLabel = new QLabel(QStringLiteral("暂无历史记录"), ui->historyPanel);
     m_historyCountLabel->setObjectName(QStringLiteral("historyCountLabel"));
 
-    filterLayout->addWidget(deviceLabel);
-    filterLayout->addWidget(m_historyDeviceCombo);
-    filterLayout->addWidget(startLabel);
-    filterLayout->addWidget(m_historyStartEdit);
-    filterLayout->addWidget(endLabel);
-    filterLayout->addWidget(m_historyEndEdit);
-    filterLayout->addWidget(queryButton);
-    filterLayout->addWidget(recentButton);
-    filterLayout->addWidget(m_historyCountLabel, 1);
+    quickRangeLayout->addWidget(lastHourButton);
+    quickRangeLayout->addWidget(todayButton);
+    quickRangeLayout->addWidget(last24HoursButton);
+    quickRangeLayout->addWidget(last7DaysButton);
+    quickRangeLayout->addStretch();
+    quickRangeLayout->addWidget(queryButton);
+    quickRangeLayout->addWidget(recentButton);
+    quickRangeLayout->addWidget(m_historyCountLabel);
+
+    filterLayout->addLayout(rangeLayout);
+    filterLayout->addLayout(quickRangeLayout);
+
+    const QDateTime initialNow = QDateTime::currentDateTime();
+    connect(lastHourButton, &QPushButton::clicked, this, [this, initialNow]() {
+        setHistoryRange(initialNow.addSecs(-3600), initialNow);
+        loadHistoryData(true);
+    });
+    connect(todayButton, &QPushButton::clicked, this, [this, initialNow]() {
+        setHistoryRange(QDateTime(initialNow.date(), QTime(0, 0)), initialNow);
+        loadHistoryData(true);
+    });
+    connect(last24HoursButton, &QPushButton::clicked, this, [this, initialNow]() {
+        setHistoryRange(initialNow.addDays(-1), initialNow);
+        loadHistoryData(true);
+    });
+    connect(last7DaysButton, &QPushButton::clicked, this, [this, initialNow]() {
+        setHistoryRange(initialNow.addDays(-7), initialNow);
+        loadHistoryData(true);
+    });
 
     m_historyTable = new QTableWidget(0, 8, ui->historyPanel);
     m_historyTable->setObjectName(QStringLiteral("historyTable"));
@@ -651,7 +747,7 @@ void MainWindow::restorePersistedState()
     }
 
     if (!errorMessage.isEmpty()) {
-        statusBar()->showMessage(
+        showStatusMessage(
             QStringLiteral("恢复历史数据失败：%1").arg(errorMessage), 5000);
     }
 
@@ -661,6 +757,33 @@ void MainWindow::restorePersistedState()
     updateKpi();
 }
 
+QDateTime MainWindow::historyStartDateTime() const
+{
+    if (!m_historyStartDateEdit || !m_historyStartTimeEdit) {
+        return {};
+    }
+    return QDateTime(m_historyStartDateEdit->date(), m_historyStartTimeEdit->time());
+}
+
+QDateTime MainWindow::historyEndDateTime() const
+{
+    if (!m_historyEndDateEdit || !m_historyEndTimeEdit) {
+        return {};
+    }
+    return QDateTime(m_historyEndDateEdit->date(), m_historyEndTimeEdit->time());
+}
+
+void MainWindow::setHistoryRange(const QDateTime &start, const QDateTime &end)
+{
+    if (m_historyStartDateEdit && m_historyStartTimeEdit) {
+        m_historyStartDateEdit->setDate(start.date());
+        m_historyStartTimeEdit->setTime(start.time());
+    }
+    if (m_historyEndDateEdit && m_historyEndTimeEdit) {
+        m_historyEndDateEdit->setDate(end.date());
+        m_historyEndTimeEdit->setTime(end.time());
+    }
+}
 void MainWindow::loadHistoryData(bool useRange)
 {
     if (!m_historyTable || !m_historyDeviceCombo) {
@@ -672,8 +795,8 @@ void MainWindow::loadHistoryData(bool useRange)
     const QString deviceId = m_historyDeviceCombo->currentData().toString();
 
     if (useRange) {
-        const QDateTime start = m_historyStartEdit->dateTime();
-        const QDateTime end = m_historyEndEdit->dateTime();
+        const QDateTime start = historyStartDateTime();
+        const QDateTime end = historyEndDateTime();
         if (!start.isValid() || !end.isValid() || start > end) {
             QMessageBox::warning(
                 this, QStringLiteral("时间范围错误"),
@@ -689,7 +812,7 @@ void MainWindow::loadHistoryData(bool useRange)
 
     if (!errorMessage.isEmpty()) {
         m_historyCountLabel->setText(QStringLiteral("查询失败"));
-        statusBar()->showMessage(errorMessage, 5000);
+        showStatusMessage(errorMessage, 5000);
         return;
     }
 
@@ -716,14 +839,14 @@ void MainWindow::loadHistoryData(bool useRange)
             m_historyTable->setItem(row, column, item);
         }
 
-        QColor statusColor(QStringLiteral("#94a3b8"));
+        QColor statusColor(QStringLiteral("#5f6b7a"));
         switch (record.status) {
         case TelemetryStatus::Online:
-            statusColor = QColor(QStringLiteral("#22c55e"));
+            statusColor = QColor(QStringLiteral("#2e7d32"));
             break;
         case TelemetryStatus::Alarm:
         case TelemetryStatus::Offline:
-            statusColor = QColor(QStringLiteral("#ef4444"));
+            statusColor = QColor(QStringLiteral("#b3261e"));
             break;
         case TelemetryStatus::Stopped:
             break;
@@ -789,8 +912,8 @@ void MainWindow::setupDemoDevices()
         auto *item = new QListWidgetItem(QStringLiteral("●  %1  %2").arg(device.deviceId, device.name));
         item->setData(Qt::UserRole, device.deviceId);
         item->setData(Qt::UserRole + 1, device.name);
-        item->setForeground(online ? QColor(QStringLiteral("#22c55e"))
-                                   : QColor(QStringLiteral("#94a3b8")));
+        item->setForeground(online ? QColor(QStringLiteral("#2e7d32"))
+                                   : QColor(QStringLiteral("#5f6b7a")));
         ui->deviceList->addItem(item);
 
         if (online) {
@@ -804,6 +927,44 @@ void MainWindow::setupDemoDevices()
     }
 }
 
+void MainWindow::filterDeviceList(const QString &text)
+{
+    const QString query = text.trimmed();
+    int firstVisibleRow = -1;
+
+    for (int row = 0; row < ui->deviceList->count(); ++row) {
+        QListWidgetItem *item = ui->deviceList->item(row);
+        const QString deviceId = item->data(Qt::UserRole).toString();
+        const QString deviceName = item->data(Qt::UserRole + 1).toString();
+        const DeviceInfo info = m_deviceInfos.value(deviceId);
+        const QString searchText = QStringList{
+            deviceId,
+            deviceName,
+            info.model,
+            info.location,
+            info.ipAddress,
+            info.protocol,
+        }.join(QLatin1Char(' '));
+
+        const bool visible = query.isEmpty()
+            || searchText.contains(query, Qt::CaseInsensitive);
+        item->setHidden(!visible);
+        if (visible && firstVisibleRow < 0) {
+            firstVisibleRow = row;
+        }
+    }
+
+    const int currentRow = ui->deviceList->currentRow();
+    if (currentRow >= 0 && ui->deviceList->item(currentRow)->isHidden()) {
+        if (firstVisibleRow >= 0) {
+            ui->deviceList->setCurrentRow(firstVisibleRow);
+            ui->deviceList->scrollToItem(
+                ui->deviceList->item(firstVisibleRow), QAbstractItemView::PositionAtCenter);
+        } else {
+            ui->deviceList->clearSelection();
+        }
+    }
+}
 void MainWindow::updateDeviceListItem(int index, bool online, bool collecting)
 {
     if (index < 0 || index >= ui->deviceList->count()) {
@@ -813,13 +974,13 @@ void MainWindow::updateDeviceListItem(int index, bool online, bool collecting)
     QColor color;
     QString status;
     if (!online) {
-        color = QColor(QStringLiteral("#94a3b8"));
+        color = QColor(QStringLiteral("#5f6b7a"));
         status = QStringLiteral("未连接");
     } else if (!collecting) {
-        color = QColor(QStringLiteral("#94a3b8"));
+        color = QColor(QStringLiteral("#5f6b7a"));
         status = QStringLiteral("已停止");
     } else {
-        color = QColor(QStringLiteral("#22c55e"));
+        color = QColor(QStringLiteral("#2e7d32"));
         status = QStringLiteral("采集中");
     }
 
@@ -839,8 +1000,76 @@ void MainWindow::onDeviceSelectionChanged(int row)
     m_selectedDeviceId = m_deviceIds.at(row);
     updateDeviceControlState();
     updateSelectedChart();
+
+    if (!m_model) return;
+    for (int modelRow = 0; modelRow < m_model->rowCount(); ++modelRow) {
+        const QModelIndex index = m_model->index(modelRow, TelemetryTableModel::DeviceId);
+        if (m_model->data(index).toString() != m_selectedDeviceId) continue;
+        ui->telemetryTable->selectRow(modelRow);
+        ui->telemetryTable->scrollTo(index, QAbstractItemView::PositionAtCenter);
+        break;
+    }
 }
 
+void MainWindow::onTelemetryTableSelectionChanged(const QModelIndex &current,
+                                                   const QModelIndex &previous)
+{
+    Q_UNUSED(previous)
+    if (!current.isValid() || !m_model) return;
+    const QString deviceId = m_model
+        ->index(current.row(), TelemetryTableModel::DeviceId)
+        .data()
+        .toString();
+    selectDeviceById(deviceId);
+}
+
+void MainWindow::selectDeviceById(const QString &deviceId)
+{
+    const int row = m_deviceIds.indexOf(deviceId);
+    if (row < 0) return;
+
+    if (ui->deviceList->currentRow() == row) {
+        m_selectedDeviceIndex = row;
+        m_selectedDeviceId = deviceId;
+        updateDeviceControlState();
+        updateSelectedChart();
+        return;
+    }
+
+    ui->deviceList->setCurrentRow(row);
+    ui->deviceList->scrollToItem(ui->deviceList->item(row), QAbstractItemView::PositionAtCenter);
+}
+
+void MainWindow::showDeviceContextMenu(const QString &deviceId,
+                                       const QPoint &globalPosition)
+{
+    const int index = m_deviceIds.indexOf(deviceId);
+    if (index < 0) return;
+
+    selectDeviceById(deviceId);
+    const bool online = isDeviceOnline(index);
+    const bool collecting = m_deviceCollecting.value(deviceId, false);
+
+    QMenu menu(this);
+    QAction *editAction = menu.addAction(QStringLiteral("编辑设备信息"));
+    QAction *alarmAction = menu.addAction(QStringLiteral("查看历史报警信息"));
+    menu.addSeparator();
+    QAction *startAction = menu.addAction(QStringLiteral("开始设备采集"));
+    QAction *stopAction = menu.addAction(QStringLiteral("停止设备采集"));
+    startAction->setEnabled(m_connected && online && !collecting);
+    stopAction->setEnabled(m_connected && online && collecting);
+
+    QAction *selected = menu.exec(globalPosition);
+    if (selected == editAction) {
+        editDeviceInfo(index);
+    } else if (selected == alarmAction) {
+        showDeviceAlarmHistory(index);
+    } else if (selected == startAction) {
+        startDeviceCollection(index);
+    } else if (selected == stopAction) {
+        stopDeviceCollection(index);
+    }
+}
 void MainWindow::startDeviceCollection(int index)
 {
     if (index < 0 || index >= m_deviceIds.size()) {
@@ -971,7 +1200,7 @@ void MainWindow::editDeviceInfo(int index)
 
     updateDeviceControlState();
     updateSelectedChart();
-    statusBar()->showMessage(QStringLiteral("设备信息已保存"), 3000);
+    showStatusMessage(QStringLiteral("设备信息已保存"), 3000);
 }
 
 void MainWindow::showDeviceAlarmHistory(int index)
@@ -1026,8 +1255,8 @@ void MainWindow::showDeviceAlarmHistory(int index)
         messageItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
 
         const QColor levelColor = alarm.level == QStringLiteral("ERROR")
-            ? QColor(QStringLiteral("#ef4444"))
-            : QColor(QStringLiteral("#f59e0b"));
+            ? QColor(QStringLiteral("#b3261e"))
+            : QColor(QStringLiteral("#9a6700"));
         levelItem->setForeground(levelColor);
 
         table->setItem(row, 0, timeItem);
@@ -1079,7 +1308,7 @@ void MainWindow::updateDeviceControlState()
         ui->selectedDeviceLabel->setText(QStringLiteral("当前设备：--"));
         m_overviewDeviceNameLabel->setText(QStringLiteral("未选择设备"));
         m_overviewDeviceStateLabel->setText(QStringLiteral("请选择设备"));
-        m_overviewDeviceStateLabel->setStyleSheet(QStringLiteral("color:#94a3b8;"));
+        m_overviewDeviceStateLabel->setStyleSheet(QStringLiteral("color:#5f6b7a;"));
         m_overviewDeviceMetaLabel->setText(QStringLiteral("从左侧设备列表选择后显示设备资料"));
         m_overviewDeviceMetricsLabel->setText(QStringLiteral("暂无遥测数据"));
         m_overviewDeviceMetricsLabel->setToolTip(QString());
@@ -1118,17 +1347,17 @@ void MainWindow::updateDeviceControlState()
             : metaParts.join(QStringLiteral("  ·  ")));
     m_overviewDeviceStateLabel->setText(QStringLiteral("● %1").arg(status));
 
-    QString stateColor = QStringLiteral("#94a3b8");
+    QString stateColor = QStringLiteral("#5f6b7a");
     switch (statusCode) {
     case TelemetryStatus::Alarm:
     case TelemetryStatus::Offline:
-        stateColor = QStringLiteral("#f87171");
+        stateColor = QStringLiteral("#b3261e");
         break;
     case TelemetryStatus::Online:
-        stateColor = QStringLiteral("#22c55e");
+        stateColor = QStringLiteral("#2e7d32");
         break;
     case TelemetryStatus::Stopped:
-        stateColor = QStringLiteral("#fbbf24");
+        stateColor = QStringLiteral("#9a6700");
         break;
     }
     m_overviewDeviceStateLabel->setStyleSheet(
@@ -1175,7 +1404,7 @@ void MainWindow::setConnectionState(bool connected)
 
     if (connected) {
         ui->connectionStatusLabel->setText(QStringLiteral("● 心跳检测中"));
-        ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#22c55e;"));
+        ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#2e7d32;"));
         ui->connectButton->setText(QStringLiteral("停止检测"));
         ui->startButton->setEnabled(true);
 
@@ -1186,7 +1415,7 @@ void MainWindow::setConnectionState(bool connected)
         }
 
         updateHeartbeat();
-        ui->statusbar->showMessage(QStringLiteral("设备心跳检测与数据采集已自动启动"), 4000);
+        showStatusMessage(QStringLiteral("设备心跳检测与数据采集已自动启动"), 4000);
         if (m_logOutput) {
             m_logOutput->appendPlainText(QStringLiteral("设备心跳检测与数据采集已自动启动"));
         }
@@ -1195,7 +1424,7 @@ void MainWindow::setConnectionState(bool connected)
             QStringLiteral("设备心跳检测与数据采集已自动启动"));
     } else {
         ui->connectionStatusLabel->setText(QStringLiteral("● 检测已停止"));
-        ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#94a3b8;"));
+        ui->connectionStatusLabel->setStyleSheet(QStringLiteral("color:#5f6b7a;"));
         ui->connectButton->setText(QStringLiteral("开始检测"));
         ui->startButton->setEnabled(false);
         ui->startButton->setText(QStringLiteral("开始采集"));
@@ -1206,7 +1435,7 @@ void MainWindow::setConnectionState(bool connected)
             updateDeviceListItem(i, false, m_deviceCollecting.value(m_deviceIds.at(i), false));
         }
 
-        ui->statusbar->showMessage(QStringLiteral("设备心跳检测已停止"), 4000);
+        showStatusMessage(QStringLiteral("设备心跳检测已停止"), 4000);
         updateDeviceControlState();
         if (m_logOutput) {
             m_logOutput->appendPlainText(QStringLiteral("设备心跳检测已停止"));
@@ -1230,14 +1459,14 @@ void MainWindow::onStartClicked()
     if (m_timer->isActive()) {
         m_timer->stop();
         ui->startButton->setText(QStringLiteral("开始采集"));
-        ui->statusbar->showMessage(QStringLiteral("采集已暂停"), 3000);
+        showStatusMessage(QStringLiteral("采集已暂停"), 3000);
         if (m_logOutput) m_logOutput->appendPlainText(QStringLiteral("采集已暂停"));
         DatabaseManager::instance().insertLog(QStringLiteral("INFO"), QStringLiteral("collection"),
                                               QStringLiteral("采集已暂停"));
     } else {
         m_timer->start();
         ui->startButton->setText(QStringLiteral("暂停采集"));
-        ui->statusbar->showMessage(QStringLiteral("开始接收模拟设备数据"), 3000);
+        showStatusMessage(QStringLiteral("开始接收模拟设备数据"), 3000);
         if (m_logOutput) m_logOutput->appendPlainText(QStringLiteral("开始接收模拟设备数据"));
         DatabaseManager::instance().insertLog(QStringLiteral("INFO"), QStringLiteral("collection"),
                                               QStringLiteral("开始接收模拟设备数据"));
@@ -1388,7 +1617,7 @@ void MainWindow::onAlarmActivated(QListWidgetItem *item)
     const QString deviceId = item->data(Qt::UserRole).toString();
     const int row = m_deviceIds.indexOf(deviceId);
     if (row < 0) {
-        statusBar()->showMessage(
+        showStatusMessage(
             QStringLiteral("未找到告警对应设备：%1").arg(deviceId), 4000);
         return;
     }
@@ -1397,8 +1626,19 @@ void MainWindow::onAlarmActivated(QListWidgetItem *item)
     ui->deviceList->scrollToItem(ui->deviceList->item(row));
     updateDeviceControlState();
     ui->mainTabs->setCurrentWidget(ui->monitorTab);
-    statusBar()->showMessage(
+    showStatusMessage(
         QStringLiteral("已跳转到设备 %1 的实时监控界面").arg(deviceId), 3000);
+}
+void MainWindow::showStatusMessage(const QString &message, int timeout)
+{
+    const QString userText = m_userStatusLabel
+        ? m_userStatusLabel->text()
+        : QStringLiteral("用户：%1").arg(m_currentUser);
+    const QString timestamp = QDateTime::currentDateTime()
+        .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    statusBar()->showMessage(
+        QStringLiteral("%1  |  [%2]  %3").arg(userText, timestamp, message),
+        timeout);
 }
 void MainWindow::updateKpi()
 {
@@ -1417,7 +1657,7 @@ void MainWindow::appendAlarm(const QString &deviceId, const QString &message)
     const QString text = QStringLiteral("[%1]  %2  %3").arg(time, deviceId, message);
 
     auto *item = new QListWidgetItem(text);
-    item->setForeground(QColor(QStringLiteral("#f87171")));
+    item->setForeground(QColor(QStringLiteral("#b3261e")));
     item->setData(Qt::UserRole, deviceId);
     ui->alarmList->insertItem(0, item);
     if (m_logOutput) {
@@ -1428,7 +1668,7 @@ void MainWindow::appendAlarm(const QString &deviceId, const QString &message)
     DatabaseManager::instance().insertLog(QStringLiteral("WARN"), QStringLiteral("alarm"), text);
 
     auto *overviewItem = new QListWidgetItem(text);
-    overviewItem->setForeground(QColor(QStringLiteral("#f87171")));
+    overviewItem->setForeground(QColor(QStringLiteral("#b3261e")));
     overviewItem->setData(Qt::UserRole, deviceId);
     ui->overviewAlarmList->insertItem(0, overviewItem);
 
