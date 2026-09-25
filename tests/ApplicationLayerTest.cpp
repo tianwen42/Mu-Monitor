@@ -276,6 +276,8 @@ TelemetryRecord telemetryRecord(const QString &deviceId)
     record.voltage = 220.0;
     record.updatedAt = QDateTime::currentDateTimeUtc();
     return record;
+}
+
 AlarmRule highTemperatureRule(double threshold)
 {
     AlarmRule rule;
@@ -295,7 +297,13 @@ AlarmRule offlineRule(std::chrono::milliseconds timeout)
     rule.offlineTimeout = timeout;
     rule.severity = AlarmSeverity::Critical;
     return rule;
-}}
+}
+
+TelemetrySample highTemperatureSample()
+{
+    return temperatureSample(QStringLiteral("DEV-001"), 86.5,
+                            QDateTime::currentDateTimeUtc());
+}
 } // namespace
 
 class ApplicationLayerTest : public QObject
