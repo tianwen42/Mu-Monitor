@@ -1,5 +1,6 @@
 #pragma once
 
+#include "alarm/AlarmEvent.h"
 #include "core/BusinessStates.h"
 #include "core/DeviceInfo.h"
 #include "core/HeartbeatRecord.h"
@@ -47,6 +48,7 @@ private slots:
     void onConnectClicked();
     void onStartClicked();
     void onClearAlarmsClicked();
+    void onAcknowledgeAlarmClicked();
     void onAlarmActivated(QListWidgetItem *item);
     void onDeviceSelectionChanged(int row);
     void onStartSelectedDevice();
@@ -58,7 +60,9 @@ private slots:
     void onCollectionStateChanged(CollectionState state);
     void onDeviceStateChanged(const QString &deviceId, bool online, bool collecting);
     void onOnlineDeviceCountChanged(int count);
-    void onAlarmRaised(const QString &deviceId, const QString &message);
+    void onAlarmRaised(const AlarmEvent &event);
+    void onAlarmAcknowledged(const AlarmEvent &event);
+    void onAlarmCleared(const AlarmEvent &event);
     void onControllerError(const QString &message);
 
 private:
@@ -78,7 +82,10 @@ private:
     void updateSelectedChart();
     void updateDeviceControlState();
     void updateDeviceListItem(int index, bool online, bool collecting);
-    void appendAlarm(const QString &deviceId, const QString &message);
+    void appendAlarm(const AlarmEvent &event);
+    void updateAlarmItem(QListWidgetItem *item, const AlarmEvent &event);
+    QListWidgetItem *findAlarmItem(const QString &eventId) const;
+    QListWidgetItem *findOverviewAlarmItem(const QString &eventId) const;
     void editDeviceInfo(int index);
     void showDeviceAlarmHistory(int index);
     void loadHistoryData(bool useRange);

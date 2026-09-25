@@ -59,6 +59,56 @@
 #include <QVBoxLayout>
 #include <QtGlobal>
 
+namespace {
+constexpr int kAlarmEventIdRole = Qt::UserRole;
+constexpr int kAlarmStateRole = Qt::UserRole + 1;
+constexpr int kAlarmDeviceIdRole = Qt::UserRole + 2;
+
+QString alarmStateLabel(AlarmState state)
+{
+    switch (state) {
+    case AlarmState::Active:
+        return QStringLiteral("活动");
+    case AlarmState::Acknowledged:
+        return QStringLiteral("已确认");
+    case AlarmState::Cleared:
+        return QStringLiteral("已恢复");
+    case AlarmState::Normal:
+        return QStringLiteral("正常");
+    }
+    return QStringLiteral("未知");
+}
+
+QString alarmItemText(const AlarmEvent &event)
+{
+    const QString time = event.updatedAt.isValid()
+        ? event.updatedAt.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+        : TimeUtils::toLocalIso8601();
+    QString state = alarmStateLabel(event.state);
+    if (event.state == AlarmState::Acknowledged
+        && !event.acknowledgedBy.trimmed().isEmpty()) {
+        state += QStringLiteral("（%1）").arg(event.acknowledgedBy);
+    }
+    return QStringLiteral("[%1] [%2] %3  %4")
+        .arg(time, state, event.deviceId, event.message);
+}
+
+QColor alarmItemColor(AlarmState state)
+{
+    switch (state) {
+    case AlarmState::Active:
+        return QColor(QStringLiteral("#f87171"));
+    case AlarmState::Acknowledged:
+        return QColor(QStringLiteral("#fbbf24"));
+    case AlarmState::Cleared:
+        return QColor(QStringLiteral("#4ade80"));
+    case AlarmState::Normal:
+        return QColor(QStringLiteral("#94a3b8"));
+    }
+    return QColor(QStringLiteral("#94a3b8"));
+}
+} // namespace
+
 MainWindow::MainWindow(AppController *controller, const QString &currentUser, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -523,6 +573,7 @@ void MainWindow::setupConnections()
 {
     connect(ui->connectButton, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
     connect(ui->startButton, &QPushButton::clicked, this, &MainWindow::onStartClicked);
+    connect(ui->acknowledgeAlarmButton, &QPushButton::clicked, this, &MainWindow::onAcknowledgeAlarmClicked);
     connect(ui->clearAlarmButton, &QPushButton::clicked, this, &MainWindow::onClearAlarmsClicked);
     connect(ui->alarmList, &QListWidget::itemClicked, this, &MainWindow::onAlarmActivated);
     connect(ui->overviewAlarmList, &QListWidget::itemClicked, this, &MainWindow::onAlarmActivated);
@@ -546,8 +597,13 @@ void MainWindow::setupConnections()
             this, &MainWindow::onDeviceStateChanged);
     connect(m_controller, &AppController::onlineDeviceCountChanged,
             this, &MainWindow::onOnlineDeviceCountChanged);
-    connect(m_controller, &AppController::alarmRaised,
+    connect(m_controller,
+            QOverload<const AlarmEvent &>::of(&AppController::alarmRaised),
             this, &MainWindow::onAlarmRaised);
+    connect(m_controller, &AppController::alarmAcknowledged,
+            this, &MainWindow::onAlarmAcknowledged);
+    connect(m_controller, &AppController::alarmCleared,
+            this, &MainWindow::onAlarmCleared);
     connect(m_controller, &AppController::errorOccurred,
             this, &MainWindow::onControllerError);
     ui->deviceList->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1306,11 +1362,59 @@ void MainWindow::onStartClicked()
     }
 }void MainWindow::onClearAlarmsClicked()
 {
-    ui->alarmList->clear();
+    int removed = 0;
+    for (int row = ui->alarmList->count() - 1; row >= 0; --row) {
+        QListWidgetItem *item = ui->alarmList->item(row);
+        const auto state = static_cast<AlarmState>(
+            item->data(kAlarmStateRole).toInt());
+        if (state == AlarmState::Cleared || state == AlarmState::Normal) {
+            delete ui->alarmList->takeItem(row);
+            ++removed;
+        }
+    }
+
     ui->overviewAlarmList->clear();
-    m_controller->logEvent(QStringLiteral("INFO"), QStringLiteral("alarm"),
-                                          QStringLiteral("已清空告警列表"));
+    const QList<AlarmEvent> activeEvents = m_controller->activeAlarms();
+    for (const AlarmEvent &event : activeEvents) {
+        auto *item = new QListWidgetItem;
+        updateAlarmItem(item, event);
+        ui->overviewAlarmList->addItem(item);
+    }
+    while (ui->overviewAlarmList->count() > 8) {
+        delete ui->overviewAlarmList->takeItem(ui->overviewAlarmList->count() - 1);
+    }
+
+    if (removed > 0) {
+        showStatusMessage(QStringLiteral("已清理 %1 条恢复告警记录").arg(removed), 3000);
+        m_controller->logEvent(QStringLiteral("INFO"), QStringLiteral("alarm"),
+                               QStringLiteral("已清理 %1 条恢复告警记录").arg(removed));
+    } else {
+        showStatusMessage(QStringLiteral("没有可清理的已恢复告警"), 3000);
+    }
     updateKpi();
+}
+
+void MainWindow::onAcknowledgeAlarmClicked()
+{
+    QListWidgetItem *item = ui->alarmList->currentItem();
+    if (!item && ui->overviewAlarmList->currentItem()) {
+        item = ui->overviewAlarmList->currentItem();
+    }
+    if (!item) {
+        showStatusMessage(QStringLiteral("请先选择一条活动告警"), 3000);
+        return;
+    }
+
+    const QString eventId = item->data(kAlarmEventIdRole).toString();
+    const auto state = static_cast<AlarmState>(item->data(kAlarmStateRole).toInt());
+    if (state != AlarmState::Active) {
+        showStatusMessage(QStringLiteral("所选告警已经确认或恢复"), 3000);
+        return;
+    }
+
+    if (m_controller->acknowledgeAlarm(eventId)) {
+        showStatusMessage(QStringLiteral("告警已确认"), 3000);
+    }
 }
 
 void MainWindow::onTelemetryBatchReceived(const QList<TelemetryRecord> &records)
@@ -1388,9 +1492,48 @@ void MainWindow::onOnlineDeviceCountChanged(int count)
     updateKpi();
 }
 
-void MainWindow::onAlarmRaised(const QString &deviceId, const QString &message)
+void MainWindow::onAlarmRaised(const AlarmEvent &event)
 {
-    appendAlarm(deviceId, message);
+    appendAlarm(event);
+}
+
+void MainWindow::onAlarmAcknowledged(const AlarmEvent &event)
+{
+    QListWidgetItem *item = findAlarmItem(event.eventId);
+    if (!item) {
+        appendAlarm(event);
+        item = findAlarmItem(event.eventId);
+    }
+    if (item) {
+        updateAlarmItem(item, event);
+    }
+
+    QListWidgetItem *overviewItem = findOverviewAlarmItem(event.eventId);
+    if (!overviewItem) {
+        overviewItem = new QListWidgetItem;
+        overviewItem->setData(kAlarmEventIdRole, event.eventId);
+        ui->overviewAlarmList->insertItem(0, overviewItem);
+    }
+    updateAlarmItem(overviewItem, event);
+    updateKpi();
+}
+
+void MainWindow::onAlarmCleared(const AlarmEvent &event)
+{
+    QListWidgetItem *item = findAlarmItem(event.eventId);
+    if (!item) {
+        appendAlarm(event);
+        item = findAlarmItem(event.eventId);
+    }
+    if (item) {
+        updateAlarmItem(item, event);
+    }
+
+    if (QListWidgetItem *overviewItem = findOverviewAlarmItem(event.eventId)) {
+        delete ui->overviewAlarmList->takeItem(ui->overviewAlarmList->row(overviewItem));
+    }
+    showStatusMessage(QStringLiteral("告警已恢复：%1").arg(event.deviceId), 4000);
+    updateKpi();
 }
 
 void MainWindow::onControllerError(const QString &message)
@@ -1407,7 +1550,7 @@ void MainWindow::onAlarmActivated(QListWidgetItem *item)
         return;
     }
 
-    const QString deviceId = item->data(Qt::UserRole).toString();
+    const QString deviceId = item->data(kAlarmDeviceIdRole).toString();
     const int row = m_deviceIds.indexOf(deviceId);
     if (row < 0) {
         showStatusMessage(
@@ -1436,7 +1579,7 @@ void MainWindow::showStatusMessage(const QString &message, int timeout)
 void MainWindow::updateKpi()
 {
     ui->onlineDevicesValue->setText(QString::number(m_onlineDeviceCount));
-    ui->activeAlarmsValue->setText(QString::number(ui->alarmList->count()));
+    ui->activeAlarmsValue->setText(QString::number(m_controller->activeAlarmCount()));
     ui->avgTemperatureValue->setText(
         m_model->recordCount() == 0
             ? QStringLiteral("-- °C")
@@ -1444,26 +1587,24 @@ void MainWindow::updateKpi()
     ui->dataPointsValue->setText(QString::number(m_dataPoints));
 }
 
-void MainWindow::appendAlarm(const QString &deviceId, const QString &message)
+void MainWindow::appendAlarm(const AlarmEvent &event)
 {
-    const QString time = TimeUtils::toLocalIso8601();
-    const QString text = QStringLiteral("[%1]  %2  %3").arg(time, deviceId, message);
-
-    auto *item = new QListWidgetItem(text);
-    item->setForeground(QColor(QStringLiteral("#f87171")));
-    item->setData(Qt::UserRole, deviceId);
+    auto *item = new QListWidgetItem;
+    item->setData(kAlarmEventIdRole, event.eventId);
+    updateAlarmItem(item, event);
     ui->alarmList->insertItem(0, item);
-    if (m_logOutput) {
-        m_logOutput->appendPlainText(text);
+
+    if (event.state == AlarmState::Active
+        || event.state == AlarmState::Acknowledged) {
+        auto *overviewItem = new QListWidgetItem;
+        overviewItem->setData(kAlarmEventIdRole, event.eventId);
+        updateAlarmItem(overviewItem, event);
+        ui->overviewAlarmList->insertItem(0, overviewItem);
     }
 
-
-
-
-    auto *overviewItem = new QListWidgetItem(text);
-    overviewItem->setForeground(QColor(QStringLiteral("#f87171")));
-    overviewItem->setData(Qt::UserRole, deviceId);
-    ui->overviewAlarmList->insertItem(0, overviewItem);
+    if (m_logOutput) {
+        m_logOutput->appendPlainText(alarmItemText(event));
+    }
 
     while (ui->alarmList->count() > 50) {
         delete ui->alarmList->takeItem(ui->alarmList->count() - 1);
@@ -1473,4 +1614,41 @@ void MainWindow::appendAlarm(const QString &deviceId, const QString &message)
     }
 
     updateKpi();
+}
+
+void MainWindow::updateAlarmItem(QListWidgetItem *item, const AlarmEvent &event)
+{
+    if (!item) {
+        return;
+    }
+    item->setText(alarmItemText(event));
+    item->setForeground(alarmItemColor(event.state));
+    item->setData(kAlarmEventIdRole, event.eventId);
+    item->setData(kAlarmStateRole, static_cast<int>(event.state));
+    item->setData(kAlarmDeviceIdRole, event.deviceId);
+    item->setToolTip(QStringLiteral("事件 ID：%1\n告警键：%2\n设备：%3\n状态：%4")
+                         .arg(event.eventId, event.alarmKey, event.deviceId,
+                              alarmStateLabel(event.state)));
+}
+
+QListWidgetItem *MainWindow::findAlarmItem(const QString &eventId) const
+{
+    for (int row = 0; row < ui->alarmList->count(); ++row) {
+        QListWidgetItem *item = ui->alarmList->item(row);
+        if (item->data(kAlarmEventIdRole).toString() == eventId) {
+            return item;
+        }
+    }
+    return nullptr;
+}
+
+QListWidgetItem *MainWindow::findOverviewAlarmItem(const QString &eventId) const
+{
+    for (int row = 0; row < ui->overviewAlarmList->count(); ++row) {
+        QListWidgetItem *item = ui->overviewAlarmList->item(row);
+        if (item->data(kAlarmEventIdRole).toString() == eventId) {
+            return item;
+        }
+    }
+    return nullptr;
 }

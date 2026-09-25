@@ -106,9 +106,12 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
     auto *kpiGrid = window.findChild<QGridLayout *>(QStringLiteral("kpiLayout"));
     auto *trendPlaceholder = window.findChild<QWidget *>(QStringLiteral("trendChartPlaceholder"));
     auto *alarmPanel = window.findChild<QWidget *>(QStringLiteral("overviewAlarmPanel"));
+    auto *acknowledgeAlarmButton =
+        window.findChild<QPushButton *>(QStringLiteral("acknowledgeAlarmButton"));
     QVERIFY(kpiGrid);
     QVERIFY(trendPlaceholder);
     QVERIFY(alarmPanel);
+    QVERIFY(acknowledgeAlarmButton);
     QVERIFY(kpiGrid->itemAtPosition(0, 3));
     QVERIFY(trendPlaceholder->width() > 0);
     QVERIFY(alarmPanel->width() > 0);

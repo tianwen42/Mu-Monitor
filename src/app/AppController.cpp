@@ -1,5 +1,6 @@
 #include "app/AppController.h"
 
+#include "alarm/AlarmEngine.h"
 #include "app/MonitoringService.h"
 #include "database/DatabaseManager.h"
 #include "network/IDeviceDataSource.h"
@@ -8,6 +9,7 @@
 #include <QPromise>
 #include <QSharedPointer>
 
+#include <algorithm>
 #include <utility>
 
 namespace {
@@ -73,7 +75,23 @@ AppController::AppController(IDeviceDataSource *dataSource,
             QOverload<const AlarmEvent &>::of(&MonitoringService::alarmRaised),
             this, [this](const AlarmEvent &event) {
                 persistAlarm(event.deviceId, event.message);
+                emit alarmRaised(event);
                 emit alarmRaised(event.deviceId, event.message);
+            });
+    connect(m_monitoringService, &MonitoringService::alarmAcknowledged,
+            this, [this](const AlarmEvent &event) {
+                DatabaseManager::instance().insertLog(
+                    QStringLiteral("INFO"), QStringLiteral("alarm"),
+                    QStringLiteral("用户 %1 确认告警：%2")
+                        .arg(m_currentUser, event.message));
+                emit alarmAcknowledged(event);
+            });
+    connect(m_monitoringService, &MonitoringService::alarmCleared,
+            this, [this](const AlarmEvent &event) {
+                DatabaseManager::instance().insertLog(
+                    QStringLiteral("INFO"), QStringLiteral("alarm"),
+                    QStringLiteral("告警恢复：%1").arg(event.message));
+                emit alarmCleared(event);
             });
     connect(m_monitoringService, &MonitoringService::errorOccurred,
             this, [this](const QString &message) {
@@ -194,6 +212,37 @@ bool AppController::isDeviceOnline(const QString &deviceId) const
 bool AppController::isDeviceCollecting(const QString &deviceId) const
 {
     return m_monitoringService->isDeviceCollecting(deviceId);
+}
+
+int AppController::activeAlarmCount() const
+{
+    if (!m_monitoringService || !m_monitoringService->alarmEngine()) {
+        return 0;
+    }
+    return m_monitoringService->alarmEngine()->activeEvents().size();
+}
+
+QList<AlarmEvent> AppController::activeAlarms() const
+{
+    if (!m_monitoringService || !m_monitoringService->alarmEngine()) {
+        return {};
+    }
+    QList<AlarmEvent> events = m_monitoringService->alarmEngine()->activeEvents();
+    std::sort(events.begin(), events.end(),
+              [](const AlarmEvent &left, const AlarmEvent &right) {
+                  return left.updatedAt > right.updatedAt;
+              });
+    return events;
+}
+
+bool AppController::acknowledgeAlarm(const QString &eventId)
+{
+    if (!m_monitoringService || !m_monitoringService->acknowledgeAlarm(
+            eventId, m_currentUser)) {
+        emit errorOccurred(QStringLiteral("告警确认失败，请确认事件仍在活动状态"));
+        return false;
+    }
+    return true;
 }
 
 int AppController::onlineDeviceCount() const
