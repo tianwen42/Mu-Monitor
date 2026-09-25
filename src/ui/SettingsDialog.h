@@ -5,6 +5,7 @@
 class QCheckBox;
 class QComboBox;
 class QDialogButtonBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -22,6 +23,8 @@ private:
     void setupUi();
     void setupPages();
     void addPage(const QString &title, const QIcon &icon, QWidget *page);
+    bool saveGeneralSettings();
+    bool saveAlarmSettings();
     bool saveDataSourceSettings();
     void updateDataSourceControls();
 
@@ -29,6 +32,15 @@ private:
     QStackedWidget *m_pageStack = nullptr;
     QDialogButtonBox *m_buttonBox = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QComboBox *m_startPageCombo = nullptr;
+    QCheckBox *m_autoStartCheck = nullptr;
+    QCheckBox *m_confirmExitCheck = nullptr;
+    QCheckBox *m_alarmSoundCheck = nullptr;
+    QCheckBox *m_alarmPopupCheck = nullptr;
+    QDoubleSpinBox *m_temperatureThresholdSpin = nullptr;
+    QDoubleSpinBox *m_pressureThresholdSpin = nullptr;
+    QSpinBox *m_offlineTimeoutSpin = nullptr;
+    QSpinBox *m_activationDelaySpin = nullptr;
     QComboBox *m_dataSourceTypeCombo = nullptr;
     QLineEdit *m_hostEdit = nullptr;
     QSpinBox *m_portSpin = nullptr;

@@ -13,16 +13,19 @@
 #include "ui/SettingsDialog.h"
 #include "ui/mainwindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QDir>
 #include <QFile>
 #include <QBoxLayout>
 #include <QGridLayout>
 #include <QIcon>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
@@ -48,6 +51,8 @@ private slots:
     void destroyingWindowStopsController();
     void settingsDialogShowsUserManagementPermissionsAndDatabasePath();
     void settingsDialogPersistsDataSourceConfiguration();
+    void settingsDialogPersistsGeneralAndAlarmSettings();
+    void deviceToolsAndLogControlsAreUsable();
 
 private:
     std::unique_ptr<QTemporaryDir> m_tempDirectory;
@@ -153,6 +158,83 @@ void MainWindowResponsiveTest::reflowsOverviewAtCompactWidth()
     }
 }
 
+void MainWindowResponsiveTest::deviceToolsAndLogControlsAreUsable()
+{
+    SimulationDataSource source;
+    source.setSamplingInterval(1000);
+    SqliteTelemetryRepository repository(DatabaseManager::instance().databasePath());
+    QString repositoryError;
+    QVERIFY2(repository.start(&repositoryError), qPrintable(repositoryError));
+    AppController controller(&source, &repository, QStringLiteral("admin"));
+    MainWindow window(&controller, QStringLiteral("admin"));
+    window.setAttribute(Qt::WA_DontShowOnScreen);
+    window.show();
+    QTest::qWait(50);
+
+    auto *searchEdit =
+        window.findChild<QLineEdit *>(QStringLiteral("deviceSearchEdit"));
+    auto *filterCombo =
+        window.findChild<QComboBox *>(QStringLiteral("deviceFilterCombo"));
+    auto *deviceList =
+        window.findChild<QListWidget *>(QStringLiteral("deviceList"));
+    auto *dataSourceStatus =
+        window.findChild<QLabel *>(QStringLiteral("dataSourceStatusLabel"));
+    auto *clearRecoveredAction =
+        window.findChild<QAction *>(QStringLiteral("clearRecoveredAlarmAction"));
+    auto *deviceDockAction =
+        window.findChild<QAction *>(QStringLiteral("deviceDockAction"));
+    auto *deviceDock =
+        window.findChild<QDockWidget *>(QStringLiteral("deviceDock"));
+    QVERIFY(searchEdit);
+    QVERIFY(filterCombo);
+    QVERIFY(deviceList);
+    QVERIFY(dataSourceStatus);
+    QVERIFY(!dataSourceStatus->text().isEmpty());
+    QVERIFY(clearRecoveredAction);
+    QCOMPARE(clearRecoveredAction->text(), QStringLiteral("清理已恢复"));
+    QVERIFY(deviceDockAction);
+    QVERIFY(deviceDock);
+
+    auto visibleDeviceCount = [deviceList]() {
+        int count = 0;
+        for (int row = 0; row < deviceList->count(); ++row) {
+            if (!deviceList->item(row)->isHidden()) {
+                ++count;
+            }
+        }
+        return count;
+    };
+
+    QCOMPARE(visibleDeviceCount(), deviceList->count());
+    searchEdit->setText(QStringLiteral("DEV-001"));
+    QCoreApplication::processEvents();
+    QCOMPARE(visibleDeviceCount(), 1);
+    searchEdit->clear();
+    QCoreApplication::processEvents();
+    QCOMPARE(visibleDeviceCount(), deviceList->count());
+
+    QVERIFY(controller.setDeviceCollection(QStringLiteral("DEV-001"), false));
+    QCoreApplication::processEvents();
+    const int stoppedIndex = filterCombo->findText(QStringLiteral("已停止"));
+    QVERIFY(stoppedIndex >= 0);
+    filterCombo->setCurrentIndex(stoppedIndex);
+    QCoreApplication::processEvents();
+    QCOMPARE(visibleDeviceCount(), 1);
+
+    const bool dockWasVisible = deviceDock->isVisible();
+    deviceDockAction->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(deviceDock->isVisible(), !dockWasVisible);
+    deviceDockAction->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(deviceDock->isVisible(), dockWasVisible);
+
+    QVERIFY(window.findChild<QPushButton *>(QStringLiteral("logPauseButton")));
+    QVERIFY(window.findChild<QPushButton *>(QStringLiteral("logClearButton")));
+    QVERIFY(window.findChild<QPushButton *>(QStringLiteral("logCopyButton")));
+    QVERIFY(window.findChild<QPushButton *>(QStringLiteral("logExpandButton")));
+    repository.shutdown();
+}
 void MainWindowResponsiveTest::stopsDevicesIndependently()
 {
     SimulationDataSource source;
@@ -287,6 +369,62 @@ void MainWindowResponsiveTest::settingsDialogShowsUserManagementPermissionsAndDa
     QVERIFY(viewerPasswordButton->isEnabled());
 
     qApp->setProperty(Auth::CurrentUserProperty, QStringLiteral("admin"));
+}
+
+void MainWindowResponsiveTest::settingsDialogPersistsGeneralAndAlarmSettings()
+{
+    QSettings settings;
+    settings.remove(QStringLiteral("general"));
+    settings.remove(QStringLiteral("alarm"));
+    settings.sync();
+
+    SettingsDialog dialog;
+    auto *startPageCombo = dialog.findChild<QComboBox *>(QStringLiteral("startPageCombo"));
+    auto *autoStartCheck = dialog.findChild<QCheckBox *>(QStringLiteral("autoStartCollectionCheck"));
+    auto *confirmExitCheck = dialog.findChild<QCheckBox *>(QStringLiteral("confirmExitCheck"));
+    auto *soundCheck = dialog.findChild<QCheckBox *>(QStringLiteral("alarmSoundCheck"));
+    auto *popupCheck = dialog.findChild<QCheckBox *>(QStringLiteral("alarmPopupCheck"));
+    auto *temperatureSpin = dialog.findChild<QDoubleSpinBox *>(QStringLiteral("alarmTemperatureThresholdSpin"));
+    auto *pressureSpin = dialog.findChild<QDoubleSpinBox *>(QStringLiteral("alarmPressureThresholdSpin"));
+    auto *offlineSpin = dialog.findChild<QSpinBox *>(QStringLiteral("alarmOfflineTimeoutSpin"));
+    auto *delaySpin = dialog.findChild<QSpinBox *>(QStringLiteral("alarmActivationDelaySpin"));
+    auto *buttons = dialog.findChild<QDialogButtonBox *>();
+    QVERIFY(startPageCombo);
+    QVERIFY(autoStartCheck);
+    QVERIFY(confirmExitCheck);
+    QVERIFY(soundCheck);
+    QVERIFY(popupCheck);
+    QVERIFY(temperatureSpin);
+    QVERIFY(pressureSpin);
+    QVERIFY(offlineSpin);
+    QVERIFY(delaySpin);
+    QVERIFY(buttons);
+
+    startPageCombo->setCurrentIndex(1);
+    autoStartCheck->setChecked(false);
+    confirmExitCheck->setChecked(true);
+    soundCheck->setChecked(false);
+    popupCheck->setChecked(false);
+    temperatureSpin->setValue(92.5);
+    pressureSpin->setValue(2.35);
+    offlineSpin->setValue(12);
+    delaySpin->setValue(4);
+    buttons->button(QDialogButtonBox::Apply)->click();
+    settings.sync();
+
+    QCOMPARE(settings.value(QStringLiteral("general/startPage")).toInt(), 1);
+    QCOMPARE(settings.value(QStringLiteral("general/autoStartCollection")).toBool(), false);
+    QCOMPARE(settings.value(QStringLiteral("general/confirmExit")).toBool(), true);
+    QCOMPARE(settings.value(QStringLiteral("alarm/soundEnabled")).toBool(), false);
+    QCOMPARE(settings.value(QStringLiteral("alarm/popupEnabled")).toBool(), false);
+    QCOMPARE(settings.value(QStringLiteral("alarm/temperatureThreshold")).toDouble(), 92.5);
+    QCOMPARE(settings.value(QStringLiteral("alarm/pressureThreshold")).toDouble(), 2.35);
+    QCOMPARE(settings.value(QStringLiteral("alarm/offlineTimeoutSec")).toInt(), 12);
+    QCOMPARE(settings.value(QStringLiteral("alarm/activationDelaySec")).toInt(), 4);
+
+    settings.remove(QStringLiteral("general"));
+    settings.remove(QStringLiteral("alarm"));
+    settings.sync();
 }
 
 void MainWindowResponsiveTest::settingsDialogPersistsDataSourceConfiguration()

@@ -2,6 +2,7 @@
 #include "ui_mainwindow.h"
 
 #include "app/AppController.h"
+#include "config/DataSourceConfig.h"
 #include "ui/TelemetryTableModel.h"
 #include "ui/TrendChartWidget.h"
 #include "core/HeartbeatRecord.h"
@@ -16,6 +17,7 @@
 #include <QApplication>
 #include <QBoxLayout>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColor>
 #include <QComboBox>
 #include <QCloseEvent>
@@ -43,6 +45,8 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QPlainTextEdit>
+#include <QSettings>
+#include <QSet>
 
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -54,6 +58,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextCursor>
 
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -63,6 +68,15 @@ namespace {
 constexpr int kAlarmEventIdRole = Qt::UserRole;
 constexpr int kAlarmStateRole = Qt::UserRole + 1;
 constexpr int kAlarmDeviceIdRole = Qt::UserRole + 2;
+
+enum class DeviceFilter {
+    All = 0,
+    Online,
+    Offline,
+    Alarming,
+    Collecting,
+    Stopped,
+};
 
 QString alarmStateLabel(AlarmState state)
 {
@@ -129,6 +143,11 @@ MainWindow::MainWindow(AppController *controller, const QString &currentUser, QW
     onConnectionStateChanged(m_controller->connectionState());
     onCollectionStateChanged(m_controller->collectionState());
     updateKpi();
+
+    const int startPage = QSettings().value(QStringLiteral("general/startPage"), 0).toInt();
+    if (startPage >= 0 && startPage < ui->mainTabs->count()) {
+        ui->mainTabs->setCurrentIndex(startPage);
+    }
 }
 
 MainWindow::~MainWindow()
@@ -216,9 +235,14 @@ void MainWindow::applyResponsiveLayout()
         ui->devicePanel->setMaximumWidth(maximumWidth);
     }
 
-    if (auto *logDock = findChild<QDockWidget *>(QStringLiteral("logDock"))) {
-        logDock->setMinimumHeight(96);
-        logDock->setMaximumHeight(compact ? 130 : 180);
+    if (m_logDock) {
+        const int collapsedHeight = compact ? 130 : 180;
+        const int expandedHeight = compact ? 260 : 340;
+        m_logDock->setMinimumHeight(96);
+        m_logDock->setMaximumHeight(m_logExpanded ? expandedHeight : collapsedHeight);
+        if (m_logOutput) {
+            m_logOutput->setMaximumHeight(m_logDock->maximumHeight() - 38);
+        }
     }
 
     if (auto *lowerLayout = qobject_cast<QBoxLayout *>(ui->overviewLowerLayout)) {
@@ -390,33 +414,72 @@ void MainWindow::setupDocks()
                    | QMainWindow::AllowNestedDocks
                    | QMainWindow::AllowTabbedDocks);
 
-    auto *deviceDock = new QDockWidget(QStringLiteral("设备列表"), this);
-    deviceDock->setObjectName(QStringLiteral("deviceDock"));
-    deviceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    deviceDock->setFeatures(QDockWidget::DockWidgetMovable
-                            | QDockWidget::DockWidgetFloatable
-                            | QDockWidget::DockWidgetClosable);
+    m_deviceDock = new QDockWidget(QStringLiteral("设备列表"), this);
+    m_deviceDock->setObjectName(QStringLiteral("deviceDock"));
+    m_deviceDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_deviceDock->setFeatures(QDockWidget::DockWidgetMovable
+                              | QDockWidget::DockWidgetFloatable
+                              | QDockWidget::DockWidgetClosable);
     ui->devicePanel->setParent(nullptr);
-    deviceDock->setWidget(ui->devicePanel);
-    addDockWidget(Qt::LeftDockWidgetArea, deviceDock);
+    m_deviceDock->setWidget(ui->devicePanel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_deviceDock);
 
-    auto *logDock = new QDockWidget(QStringLiteral("运行日志 · 常驻"), this);
-    logDock->setObjectName(QStringLiteral("logDock"));
-    logDock->setAllowedAreas(Qt::BottomDockWidgetArea);
-    logDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
-    logDock->setMinimumHeight(96);
-    logDock->setMaximumHeight(180);
-    m_logOutput = new QPlainTextEdit(logDock);
+    m_logDock = new QDockWidget(QStringLiteral("运行日志 · 常驻"), this);
+    m_logDock->setObjectName(QStringLiteral("logDock"));
+    m_logDock->setAllowedAreas(Qt::BottomDockWidgetArea);
+    m_logDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    m_logDock->setMinimumHeight(96);
+    m_logDock->setMaximumHeight(180);
+
+    auto *logContainer = new QWidget(m_logDock);
+    auto *logLayout = new QVBoxLayout(logContainer);
+    logLayout->setContentsMargins(6, 4, 6, 6);
+    logLayout->setSpacing(4);
+
+    auto *logControls = new QHBoxLayout;
+    logControls->setSpacing(6);
+    logControls->addWidget(new QLabel(QStringLiteral("运行信息"), logContainer));
+    logControls->addStretch();
+
+    m_logPauseButton = new QPushButton(QStringLiteral("暂停滚动"), logContainer);
+    m_logPauseButton->setObjectName(QStringLiteral("logPauseButton"));
+    m_logPauseButton->setProperty("compact", true);
+    m_logClearButton = new QPushButton(QStringLiteral("清空"), logContainer);
+    m_logClearButton->setObjectName(QStringLiteral("logClearButton"));
+    m_logClearButton->setProperty("compact", true);
+    m_logCopyButton = new QPushButton(QStringLiteral("复制"), logContainer);
+    m_logCopyButton->setObjectName(QStringLiteral("logCopyButton"));
+    m_logCopyButton->setProperty("compact", true);
+    m_logExpandButton = new QPushButton(QStringLiteral("展开"), logContainer);
+    m_logExpandButton->setObjectName(QStringLiteral("logExpandButton"));
+    m_logExpandButton->setProperty("compact", true);
+    logControls->addWidget(m_logPauseButton);
+    logControls->addWidget(m_logClearButton);
+    logControls->addWidget(m_logCopyButton);
+    logControls->addWidget(m_logExpandButton);
+    logLayout->addLayout(logControls);
+
+    m_logOutput = new QPlainTextEdit(logContainer);
     m_logOutput->setObjectName(QStringLiteral("logOutput"));
     m_logOutput->setReadOnly(true);
     m_logOutput->setMaximumBlockCount(2000);
-    m_logOutput->setMinimumHeight(64);
+    m_logOutput->setMinimumHeight(56);
     m_logOutput->setMaximumHeight(142);
     m_logOutput->setPlaceholderText(QStringLiteral("系统运行日志将在这里显示..."));
-    logDock->setWidget(m_logOutput);
-    addDockWidget(Qt::BottomDockWidgetArea, logDock);
-    logDock->show();
-    resizeDocks({logDock}, {150}, Qt::Vertical);
+    logLayout->addWidget(m_logOutput, 1);
+    m_logDock->setWidget(logContainer);
+    addDockWidget(Qt::BottomDockWidgetArea, m_logDock);
+    m_logDock->show();
+    resizeDocks({m_logDock}, {150}, Qt::Vertical);
+
+    connect(m_logExpandButton, &QPushButton::clicked,
+            this, &MainWindow::toggleLogExpanded);
+    connect(m_logPauseButton, &QPushButton::clicked,
+            this, &MainWindow::toggleLogPaused);
+    connect(m_logClearButton, &QPushButton::clicked,
+            this, &MainWindow::clearLog);
+    connect(m_logCopyButton, &QPushButton::clicked,
+            this, &MainWindow::copyLog);
 
     const QList<QWidget *> oldTabs = {ui->devicesTab, ui->settingsTab};
     for (QWidget *tab : oldTabs) {
@@ -427,7 +490,7 @@ void MainWindow::setupDocks()
     }
 
     if (m_logOutput) {
-        m_logOutput->appendPlainText(QStringLiteral("Mu-Monitor 界面初始化完成"));
+        appendLog(QStringLiteral("Mu-Monitor 界面初始化完成"));
     }
 }
 
@@ -445,6 +508,21 @@ void MainWindow::setupToolBar()
     toolBar->setFloatable(false);
     toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
+    if (m_deviceDock) {
+        m_deviceDockAction = new QAction(
+            style()->standardIcon(QStyle::SP_FileDialogListView),
+            QStringLiteral("设备列表"), this);
+        m_deviceDockAction->setObjectName(QStringLiteral("deviceDockAction"));
+        m_deviceDockAction->setCheckable(true);
+        m_deviceDockAction->setChecked(m_deviceDock->isVisible());
+        connect(m_deviceDockAction, &QAction::toggled,
+                m_deviceDock, &QDockWidget::setVisible);
+        connect(m_deviceDock, &QDockWidget::visibilityChanged,
+                m_deviceDockAction, &QAction::setChecked);
+        toolBar->addAction(m_deviceDockAction);
+        toolBar->addSeparator();
+    }
+
     ui->connectButton->hide();
     ui->startButton->hide();
     ui->clearAlarmButton->hide();
@@ -452,11 +530,12 @@ void MainWindow::setupToolBar()
     ui->headerLayout->removeWidget(ui->connectionStatusLabel);
     ui->connectionStatusLabel->setParent(toolBar);
 
-    QAction *collectAction = new QAction(
-        style()->standardIcon(QStyle::SP_MediaPlay), QStringLiteral("开始/暂停采集"), this);
-    collectAction->setEnabled(m_canControlCollection);
-    connect(collectAction, &QAction::triggered, ui->startButton, &QPushButton::click);
-    toolBar->addAction(collectAction);
+    m_collectAction = new QAction(
+        style()->standardIcon(QStyle::SP_MediaPlay), QStringLiteral("全部开始采集"), this);
+    m_collectAction->setObjectName(QStringLiteral("collectAction"));
+    m_collectAction->setEnabled(m_canControlCollection);
+    connect(m_collectAction, &QAction::triggered, ui->startButton, &QPushButton::click);
+    toolBar->addAction(m_collectAction);
 
     QAction *refreshAction = new QAction(
         style()->standardIcon(QStyle::SP_BrowserReload), QStringLiteral("刷新"), this);
@@ -469,7 +548,8 @@ void MainWindow::setupToolBar()
     toolBar->addSeparator();
 
     QAction *clearAction = new QAction(
-        style()->standardIcon(QStyle::SP_DialogResetButton), QStringLiteral("清空告警"), this);
+        style()->standardIcon(QStyle::SP_DialogResetButton), QStringLiteral("清理已恢复"), this);
+    clearAction->setObjectName(QStringLiteral("clearRecoveredAlarmAction"));
     clearAction->setEnabled(canAcknowledgeAlarm);
     connect(clearAction, &QAction::triggered, ui->clearAlarmButton, &QPushButton::click);
     toolBar->addAction(clearAction);
@@ -481,6 +561,7 @@ void MainWindow::setupToolBar()
     connect(optionsAction, &QAction::triggered, this, [this]() {
         SettingsDialog dialog(this);
         dialog.exec();
+        refreshDataSourceStatus();
     });
     toolBar->addAction(optionsAction);
 
@@ -514,6 +595,13 @@ void MainWindow::setupToolBar()
     auto *toolbarSpacer = new QWidget(toolBar);
     toolbarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolBar->addWidget(toolbarSpacer);
+
+    m_dataSourceStatusLabel = new QLabel(toolBar);
+    m_dataSourceStatusLabel->setObjectName(QStringLiteral("dataSourceStatusLabel"));
+    m_dataSourceStatusLabel->setProperty("metadata", true);
+    toolBar->addWidget(m_dataSourceStatusLabel);
+    refreshDataSourceStatus();
+
     toolBar->addWidget(ui->connectionStatusLabel);
 
     QAction *aboutAction = new QAction(
@@ -528,6 +616,92 @@ void MainWindow::setupToolBar()
 
 }
 
+void MainWindow::appendLog(const QString &message)
+{
+    if (!m_logOutput) {
+        return;
+    }
+
+    m_logOutput->appendPlainText(message);
+    if (!m_logPaused) {
+        QTextCursor cursor = m_logOutput->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        m_logOutput->setTextCursor(cursor);
+        m_logOutput->ensureCursorVisible();
+    }
+}
+
+void MainWindow::toggleLogExpanded()
+{
+    m_logExpanded = !m_logExpanded;
+    if (m_logExpandButton) {
+        m_logExpandButton->setText(
+            m_logExpanded ? QStringLiteral("收起") : QStringLiteral("展开"));
+    }
+    applyResponsiveLayout();
+    if (m_logDock) {
+        const bool compact = width() < 1120 || height() < 760;
+        const int targetHeight = m_logExpanded ? (compact ? 260 : 340) : 150;
+        resizeDocks({m_logDock}, {targetHeight}, Qt::Vertical);
+    }
+}
+
+void MainWindow::toggleLogPaused()
+{
+    m_logPaused = !m_logPaused;
+    if (m_logPauseButton) {
+        m_logPauseButton->setText(
+            m_logPaused ? QStringLiteral("继续滚动") : QStringLiteral("暂停滚动"));
+    }
+}
+
+void MainWindow::clearLog()
+{
+    if (m_logOutput) {
+        m_logOutput->clear();
+        appendLog(QStringLiteral("运行日志视图已清空"));
+    }
+}
+
+void MainWindow::copyLog()
+{
+    if (m_logOutput) {
+        QApplication::clipboard()->setText(m_logOutput->toPlainText());
+    }
+}
+void MainWindow::refreshDataSourceStatus()
+{
+    if (!m_dataSourceStatusLabel) {
+        return;
+    }
+
+    const ApplicationConfig config = ApplicationConfig::fromSettings(QSettings());
+    QString currentStatus;
+    switch (config.dataSource.type) {
+    case DataSourceType::Simulation:
+        currentStatus = QStringLiteral("数据源：内置模拟");
+        break;
+    case DataSourceType::Tcp:
+        currentStatus = QStringLiteral("数据源：TCP %1:%2")
+                            .arg(config.dataSource.host)
+                            .arg(config.dataSource.port);
+        break;
+    case DataSourceType::Invalid:
+        currentStatus = QStringLiteral("数据源：配置无效");
+        break;
+    }
+
+    if (m_runtimeDataSourceStatus.isEmpty()) {
+        m_runtimeDataSourceStatus = currentStatus;
+    }
+
+    const bool requiresRestart = currentStatus != m_runtimeDataSourceStatus;
+    m_dataSourceStatusLabel->setText(
+        requiresRestart ? currentStatus + QStringLiteral("（重启生效）") : currentStatus);
+    m_dataSourceStatusLabel->setToolTip(
+        QStringLiteral("当前运行数据源：%1\n修改数据源后需要完全退出并重启程序。")
+            .arg(m_runtimeDataSourceStatus));
+}
 void MainWindow::setupTrayIcon()
 {
     if (!QSystemTrayIcon::isSystemTrayAvailable()) {
@@ -560,6 +734,13 @@ void MainWindow::setupTrayIcon()
 
     QAction *exitAction = trayMenu->addAction(QStringLiteral("退出 Mu-Monitor"));
     connect(exitAction, &QAction::triggered, this, [this]() {
+        if (QSettings().value(QStringLiteral("general/confirmExit"), true).toBool()
+            && QMessageBox::question(
+                   this, QStringLiteral("确认退出"),
+                   QStringLiteral("确定要退出 Mu-Monitor 吗？"))
+                   != QMessageBox::Yes) {
+            return;
+        }
         m_forceQuit = true;
         qApp->quit();
     });
@@ -886,8 +1067,106 @@ void MainWindow::loadHistoryData(bool useRange)
 }
 void MainWindow::setupDeviceList()
 {
+    auto *filterLayout = new QHBoxLayout;
+    filterLayout->setSpacing(6);
+
+    m_deviceSearchEdit = new QLineEdit(ui->devicePanel);
+    m_deviceSearchEdit->setObjectName(QStringLiteral("deviceSearchEdit"));
+    m_deviceSearchEdit->setPlaceholderText(QStringLiteral("搜索设备编号、名称或位置"));
+    m_deviceSearchEdit->setClearButtonEnabled(true);
+    filterLayout->addWidget(m_deviceSearchEdit, 1);
+
+    m_deviceFilterCombo = new QComboBox(ui->devicePanel);
+    m_deviceFilterCombo->setObjectName(QStringLiteral("deviceFilterCombo"));
+    m_deviceFilterCombo->addItem(QStringLiteral("全部"), static_cast<int>(DeviceFilter::All));
+    m_deviceFilterCombo->addItem(QStringLiteral("在线"), static_cast<int>(DeviceFilter::Online));
+    m_deviceFilterCombo->addItem(QStringLiteral("离线"), static_cast<int>(DeviceFilter::Offline));
+    m_deviceFilterCombo->addItem(QStringLiteral("告警"), static_cast<int>(DeviceFilter::Alarming));
+    m_deviceFilterCombo->addItem(QStringLiteral("采集中"), static_cast<int>(DeviceFilter::Collecting));
+    m_deviceFilterCombo->addItem(QStringLiteral("已停止"), static_cast<int>(DeviceFilter::Stopped));
+    filterLayout->addWidget(m_deviceFilterCombo);
+
+    ui->deviceLayout->insertLayout(1, filterLayout);
+    m_deviceFilterCountLabel = new QLabel(QStringLiteral("显示 0 / 0"), ui->devicePanel);
+    m_deviceFilterCountLabel->setObjectName(QStringLiteral("deviceFilterCountLabel"));
+    ui->deviceLayout->insertWidget(2, m_deviceFilterCountLabel);
+
+    connect(m_deviceSearchEdit, &QLineEdit::textChanged,
+            this, [this](const QString &) { applyDeviceFilter(); });
+    connect(m_deviceFilterCombo, &QComboBox::currentIndexChanged,
+            this, [this](int) { applyDeviceFilter(); });
+
     const QList<DeviceInfo> devices = m_controller->devices();
     onDevicesChanged(devices);
+}
+
+void MainWindow::applyDeviceFilter()
+{
+    if (!m_deviceSearchEdit || !m_deviceFilterCombo) {
+        return;
+    }
+
+    const QString query = m_deviceSearchEdit->text().trimmed();
+    const DeviceFilter filter = static_cast<DeviceFilter>(
+        m_deviceFilterCombo->currentData().toInt());
+
+    QSet<QString> alarmingDevices;
+    for (const AlarmEvent &event : m_controller->activeAlarms()) {
+        alarmingDevices.insert(event.deviceId);
+    }
+
+    int visibleCount = 0;
+    int firstVisibleRow = -1;
+    for (int row = 0; row < ui->deviceList->count(); ++row) {
+        QListWidgetItem *item = ui->deviceList->item(row);
+        const QString deviceId = item->data(Qt::UserRole).toString();
+        const QString deviceName = item->data(Qt::UserRole + 1).toString();
+        const DeviceInfo info = m_deviceInfos.value(deviceId);
+        const QString searchable = QStringLiteral("%1 %2 %3 %4")
+            .arg(deviceId, deviceName, info.model, info.location);
+        const bool matchesSearch = query.isEmpty()
+            || searchable.contains(query, Qt::CaseInsensitive);
+
+        const bool online = m_deviceOnline.value(deviceId, false);
+        const bool collecting = m_deviceCollecting.value(deviceId, false);
+        bool matchesFilter = true;
+        switch (filter) {
+        case DeviceFilter::All:
+            break;
+        case DeviceFilter::Online:
+            matchesFilter = online;
+            break;
+        case DeviceFilter::Offline:
+            matchesFilter = !online;
+            break;
+        case DeviceFilter::Alarming:
+            matchesFilter = alarmingDevices.contains(deviceId);
+            break;
+        case DeviceFilter::Collecting:
+            matchesFilter = collecting;
+            break;
+        case DeviceFilter::Stopped:
+            matchesFilter = !collecting;
+            break;
+        }
+
+        const bool visible = matchesSearch && matchesFilter;
+        item->setHidden(!visible);
+        if (visible) {
+            ++visibleCount;
+            if (firstVisibleRow < 0) {
+                firstVisibleRow = row;
+            }
+        }
+    }
+
+    m_deviceFilterCountLabel->setText(
+        QStringLiteral("显示 %1 / %2").arg(visibleCount).arg(ui->deviceList->count()));
+
+    if (ui->deviceList->currentRow() < 0
+        || (ui->deviceList->currentItem() && ui->deviceList->currentItem()->isHidden())) {
+        ui->deviceList->setCurrentRow(firstVisibleRow);
+    }
 }
 
 void MainWindow::onDevicesChanged(const QList<DeviceInfo> &devices)
@@ -924,10 +1203,7 @@ void MainWindow::onDevicesChanged(const QList<DeviceInfo> &devices)
     m_onlineDeviceCount = m_controller->onlineDeviceCount();
     rebuildHistoryDeviceCombo();
 
-    if (ui->deviceList->count() > 0) {
-        ui->deviceList->setCurrentRow(0);
-        onDeviceSelectionChanged(0);
-    }
+    applyDeviceFilter();
     updateKpi();
 }
 void MainWindow::updateDeviceListItem(int index, bool online, bool collecting)
@@ -1298,7 +1574,7 @@ void MainWindow::onConnectionStateChanged(ConnectionState state)
         showStatusMessage(
             QStringLiteral("设备心跳检测与数据采集已启动"), 4000);
         if (m_logOutput) {
-            m_logOutput->appendPlainText(
+            appendLog(
                 QStringLiteral("设备心跳检测与数据采集已启动"));
         }
     } else {
@@ -1317,7 +1593,7 @@ void MainWindow::onConnectionStateChanged(ConnectionState state)
         m_onlineDeviceCount = 0;
         showStatusMessage(QStringLiteral("设备心跳检测已停止"), 4000);
         if (m_logOutput) {
-            m_logOutput->appendPlainText(QStringLiteral("设备心跳检测已停止"));
+            appendLog(QStringLiteral("设备心跳检测已停止"));
         }
     }
 
@@ -1332,6 +1608,12 @@ void MainWindow::onCollectionStateChanged(CollectionState state)
     const bool running = state == CollectionState::Running;
     ui->startButton->setText(
         running ? QStringLiteral("暂停采集") : QStringLiteral("开始采集"));
+    if (m_collectAction) {
+        m_collectAction->setText(
+            running ? QStringLiteral("全部暂停采集") : QStringLiteral("全部开始采集"));
+        m_collectAction->setIcon(style()->standardIcon(
+            running ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+    }
     ui->startButton->setEnabled(m_connectionState == ConnectionState::Connected);
     updateDeviceControlState();
 }
@@ -1357,15 +1639,15 @@ void MainWindow::onStartClicked()
         m_controller->pauseCollection();
         showStatusMessage(QStringLiteral("采集已暂停"), 3000);
         if (m_logOutput) {
-            m_logOutput->appendPlainText(QStringLiteral("采集已暂停"));
+            appendLog(QStringLiteral("采集已暂停"));
         }
     } else {
         m_controller->resumeCollection();
         showStatusMessage(
-            QStringLiteral("开始接收模拟设备数据"), 3000);
+            QStringLiteral("已开始采集设备数据"), 3000);
         if (m_logOutput) {
-            m_logOutput->appendPlainText(
-                QStringLiteral("开始接收模拟设备数据"));
+            appendLog(
+                QStringLiteral("已开始采集设备数据"));
         }
     }
 }void MainWindow::onClearAlarmsClicked()
@@ -1474,6 +1756,7 @@ void MainWindow::onHeartbeatBatchReceived(const QList<HeartbeatRecord> &heartbea
     }
 
     m_onlineDeviceCount = m_controller->onlineDeviceCount();
+    applyDeviceFilter();
     updateDeviceControlState();
     updateSelectedChart();
     updateKpi();
@@ -1489,6 +1772,7 @@ void MainWindow::onDeviceStateChanged(const QString &deviceId, bool online, bool
     m_deviceOnline[deviceId] = online;
     m_deviceCollecting[deviceId] = collecting;
     updateDeviceListItem(index, online, collecting);
+    applyDeviceFilter();
     updateDeviceControlState();
     updateSelectedChart();
     updateKpi();
@@ -1503,6 +1787,21 @@ void MainWindow::onOnlineDeviceCountChanged(int count)
 void MainWindow::onAlarmRaised(const AlarmEvent &event)
 {
     appendAlarm(event);
+    applyDeviceFilter();
+
+    const QSettings settings;
+    if (settings.value(QStringLiteral("alarm/soundEnabled"), true).toBool()) {
+        QApplication::beep();
+    }
+    if (event.severity == AlarmSeverity::Critical
+        && settings.value(QStringLiteral("alarm/popupEnabled"), true).toBool()
+        && m_trayIcon) {
+        m_trayIcon->showMessage(
+            QStringLiteral("严重告警"),
+            QStringLiteral("%1：%2").arg(event.deviceId, event.message),
+            QSystemTrayIcon::Critical,
+            5000);
+    }
 }
 
 void MainWindow::onAlarmAcknowledged(const AlarmEvent &event)
@@ -1523,6 +1822,7 @@ void MainWindow::onAlarmAcknowledged(const AlarmEvent &event)
         ui->overviewAlarmList->insertItem(0, overviewItem);
     }
     updateAlarmItem(overviewItem, event);
+    applyDeviceFilter();
     updateKpi();
 }
 
@@ -1541,13 +1841,14 @@ void MainWindow::onAlarmCleared(const AlarmEvent &event)
         delete ui->overviewAlarmList->takeItem(ui->overviewAlarmList->row(overviewItem));
     }
     showStatusMessage(QStringLiteral("告警已恢复：%1").arg(event.deviceId), 4000);
+    applyDeviceFilter();
     updateKpi();
 }
 
 void MainWindow::onControllerError(const QString &message)
 {
     if (m_logOutput) {
-        m_logOutput->appendPlainText(
+        appendLog(
             QStringLiteral("应用层错误：%1").arg(message));
     }
     showStatusMessage(message, 5000);
@@ -1611,7 +1912,7 @@ void MainWindow::appendAlarm(const AlarmEvent &event)
     }
 
     if (m_logOutput) {
-        m_logOutput->appendPlainText(alarmItemText(event));
+        appendLog(alarmItemText(event));
     }
 
     while (ui->alarmList->count() > 50) {
