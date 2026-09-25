@@ -517,3 +517,90 @@ ModbusTcpDeviceDataSource
 - 高频网络数据必须经过有界队列或受控信号链。
 - SQLite 固定使用本地文件，不引入服务端数据库。
 - 所有异常路径都必须有日志、指标或可重复测试。
+---
+
+# 状态模型与代码约定
+
+###  状态模型
+
+####  连接状态
+
+```text
+Disconnected -> Connecting -> Connected
+                    |             |
+                    v             v
+               Reconnecting <-----+
+                    |
+                    v
+                 Connecting / Connected / Disconnected
+
+Connected -> Stopping -> Disconnected
+```
+
+规则：
+
+- 只有 `Disconnected -> Connecting` 可以主动开始连接。
+- 连接失败或断线进入 `Reconnecting`，重连动作再进入 `Connecting`。
+- 主动停止先进入 `Stopping`，资源释放完成后进入 `Disconnected`。
+- 不允许重复进入相同状态，避免 UI 和日志产生重复事件。
+
+####  采集状态
+
+```text
+Stopped -> Running -> Paused -> Running
+   ^          |          |
+   |          v          v
+   +------ Stopped / Faulted
+              |
+              v
+        Stopped / Running
+```
+
+规则：
+
+- 只有 `Running` 或 `Paused` 可以暂停。
+- 网络错误或数据源故障进入 `Faulted`。
+- `Faulted` 恢复时需要显式进入 `Running` 或 `Stopped`。
+- 采集状态与连接状态独立，连接断开时采集必须停止或进入故障态。
+
+####  告警等级
+
+- `Info`：信息事件，不需要操作。
+- `Warning`：需要关注，允许确认。
+- `Critical`：需要优先处理，通常伴随显著 UI 提示。
+
+告警生命周期和确认/恢复状态机将在阶段 6 实现；当前只冻结等级定义。
+
+---
+
+###  C++ 编码约定
+
+####  命名
+
+- 类型使用 `PascalCase`，函数和局部变量使用 `camelCase`。
+- 成员变量使用 `m_` 前缀，常量使用 `k` 前缀。
+- Qt 信号使用过去式或状态语义，例如 `runningChanged`、`clientCountChanged`。
+- 文件名与主要类型一致，头文件与实现文件成对维护。
+
+####  文件组织
+
+- 领域模型与接口放在 `src/core`，禁止依赖 Qt Widgets。
+- 网络、数据库、告警、UI 和工具代码分别放入对应目录。
+- 新模块必须加入 CMake，且能被独立测试目标引用。
+- 第三方源码只放在 `third_party`，项目代码不得修改第三方头文件。
+
+####  错误处理与日志
+
+- 公共函数通过返回值表示失败，并使用可选的 `QString *errorMessage` 返回诊断信息。
+- 不允许静默忽略数据库、网络或文件系统错误。
+- 日志必须包含模块和关键上下文，禁止记录密码、令牌或敏感数据。
+- UI 可以显示简短错误，详细信息应写入可查询的日志。
+
+####  质量门槛
+
+- 新代码默认启用 `-Wall -Wextra -Wpedantic`。
+- 提交前执行 `scripts/check.ps1`。
+- 关键逻辑必须有 QtTest；暂时无法测试时，在提交说明中记录原因。
+- Git 提交信息遵循 `TODOLIST.md` 中的提交规范。
+
+---
