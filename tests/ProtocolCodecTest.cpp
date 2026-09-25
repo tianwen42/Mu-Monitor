@@ -40,17 +40,47 @@ class ProtocolCodecTest : public QObject
 
 private slots:
     void crc16MatchesStandardVector();
+    void fixedVectorMatchesProtocolV1();
     void encodeDecodeRoundTrip();
+    void encodeRejectsInvalidFrameValues();
     void decoderReassemblesFragmentedFrame();
     void decoderHandlesCoalescedFrames();
+    void decoderReportsTruncatedFrameOnFinish();
+    void decoderResynchronizesAfterTruncatedFrame();
     void rejectsBadCrc();
     void rejectsUnknownVersion();
+    void rejectsUnknownMessageType();
+    void rejectsInvalidLengthAndResynchronizes();
     void rejectsOversizeFrameAndResynchronizes();
 };
 
 void ProtocolCodecTest::crc16MatchesStandardVector()
 {
     QCOMPARE(CRC16::compute(QByteArrayLiteral("123456789")), quint16(0x29b1));
+}
+
+void ProtocolCodecTest::fixedVectorMatchesProtocolV1()
+{
+    Frame frame;
+    frame.version = Protocol::Version1;
+    frame.messageType = Protocol::MessageType::Telemetry;
+    frame.sequence = 0x01020304U;
+    frame.deviceId = QStringLiteral("DEV-001");
+    frame.timestampUtcMs = 0x0102030405060708LL;
+
+    QString errorMessage;
+    const QByteArray encoded = FrameCodec::encode(frame, &errorMessage);
+    QVERIFY2(!encoded.isEmpty(), qPrintable(errorMessage));
+    QCOMPARE(encoded.toHex(),
+             QByteArrayLiteral("4d5501010034010203044445562d303031"
+                               "00000000000000000000000000000000000000000000000000"
+                               "010203040506070803f4"));
+
+    const DecodeResult decoded = FrameCodec::decode(encoded);
+    QCOMPARE(decoded.status, DecodeStatus::Ok);
+    QCOMPARE(decoded.consumedBytes, 52);
+    QCOMPARE(decoded.frame.sequence, 0x01020304U);
+    QCOMPARE(decoded.frame.timestampUtcMs, 0x0102030405060708LL);
 }
 
 void ProtocolCodecTest::encodeDecodeRoundTrip()
@@ -75,6 +105,31 @@ void ProtocolCodecTest::encodeDecodeRoundTrip()
     QCOMPARE(result.frame.deviceId, source.deviceId);
     QCOMPARE(result.frame.timestampUtcMs, source.timestampUtcMs);
     QCOMPARE(result.frame.payload, source.payload);
+}
+
+void ProtocolCodecTest::encodeRejectsInvalidFrameValues()
+{
+    QString errorMessage;
+
+    Frame frame = makeFrame();
+    frame.version = 2;
+    QVERIFY(FrameCodec::encode(frame, &errorMessage).isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("版本")));
+
+    frame = makeFrame();
+    frame.messageType = static_cast<Protocol::MessageType>(0x55);
+    QVERIFY(FrameCodec::encode(frame, &errorMessage).isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("消息类型")));
+
+    frame = makeFrame();
+    frame.deviceId = QString(33, QLatin1Char('x'));
+    QVERIFY(FrameCodec::encode(frame, &errorMessage).isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("设备 ID")));
+
+    frame = makeFrame();
+    frame.payload = QByteArray(Protocol::kMaxPayloadSize + 1, 'x');
+    QVERIFY(FrameCodec::encode(frame, &errorMessage).isEmpty());
+    QVERIFY(errorMessage.contains(QStringLiteral("超过上限")));
 }
 
 void ProtocolCodecTest::decoderReassemblesFragmentedFrame()
@@ -115,6 +170,48 @@ void ProtocolCodecTest::decoderHandlesCoalescedFrames()
     QCOMPARE(secondEvent.frame.sequence, 2U);
 }
 
+void ProtocolCodecTest::decoderReportsTruncatedFrameOnFinish()
+{
+    const QByteArray encoded = FrameCodec::encode(makeFrame());
+    QVERIFY(!encoded.isEmpty());
+
+    FrameDecoder decoder;
+    decoder.appendData(encoded.left(encoded.size() - 3));
+    QVERIFY(!decoder.hasEvents());
+
+    decoder.finish();
+    QCOMPARE(decoder.eventCount(), 1);
+    const FrameDecoder::Event event = decoder.takeNextEvent();
+    QCOMPARE(event.type, FrameDecoder::EventType::ProtocolError);
+    QVERIFY(event.message.contains(QStringLiteral("截断")));
+    QCOMPARE(decoder.bufferedBytes(), 0);
+}
+
+void ProtocolCodecTest::decoderResynchronizesAfterTruncatedFrame()
+{
+    const QByteArray truncated = FrameCodec::encode(makeFrame(1)).left(23);
+    const QByteArray valid = FrameCodec::encode(makeFrame(2));
+    QVERIFY(!valid.isEmpty());
+
+    FrameDecoder decoder;
+    decoder.appendData(truncated + valid);
+
+    bool sawError = false;
+    bool sawFrame = false;
+    while (decoder.hasEvents()) {
+        const FrameDecoder::Event event = decoder.takeNextEvent();
+        if (event.type == FrameDecoder::EventType::ProtocolError) {
+            sawError = true;
+            QVERIFY(event.message.contains(QStringLiteral("重新同步")));
+        } else {
+            sawFrame = true;
+            QCOMPARE(event.frame.sequence, 2U);
+        }
+    }
+    QVERIFY(sawError);
+    QVERIFY(sawFrame);
+}
+
 void ProtocolCodecTest::rejectsBadCrc()
 {
     QByteArray encoded = FrameCodec::encode(makeFrame());
@@ -141,11 +238,55 @@ void ProtocolCodecTest::rejectsUnknownVersion()
     QCOMPARE(result.status, DecodeStatus::UnsupportedVersion);
 
     FrameDecoder decoder;
-    decoder.appendData(encoded);
+    const QByteArray valid = FrameCodec::encode(makeFrame(99));
+    decoder.appendData(encoded + valid);
     QVERIFY(decoder.hasEvents());
     const FrameDecoder::Event event = decoder.takeNextEvent();
     QCOMPARE(event.type, FrameDecoder::EventType::ProtocolError);
     QVERIFY(event.message.contains(QStringLiteral("版本")));
+    QVERIFY(decoder.hasEvents());
+    const FrameDecoder::Event nextEvent = decoder.takeNextEvent();
+    QCOMPARE(nextEvent.type, FrameDecoder::EventType::DecodedFrame);
+    QCOMPARE(nextEvent.frame.sequence, 99U);
+}
+
+void ProtocolCodecTest::rejectsUnknownMessageType()
+{
+    QByteArray encoded = FrameCodec::encode(makeFrame());
+    QVERIFY(!encoded.isEmpty());
+    encoded[3] = static_cast<char>(0x55);
+
+    const DecodeResult result = FrameCodec::decode(encoded);
+    QCOMPARE(result.status, DecodeStatus::UnknownMessageType);
+
+    FrameDecoder decoder;
+    decoder.appendData(encoded);
+    QVERIFY(decoder.hasEvents());
+    const FrameDecoder::Event event = decoder.takeNextEvent();
+    QCOMPARE(event.type, FrameDecoder::EventType::ProtocolError);
+    QVERIFY(event.message.contains(QStringLiteral("消息类型")));
+}
+
+void ProtocolCodecTest::rejectsInvalidLengthAndResynchronizes()
+{
+    QByteArray invalidLength(Protocol::kHeaderSize, '\0');
+    invalidLength[0] = static_cast<char>((Protocol::kMagic >> 8) & 0xff);
+    invalidLength[1] = static_cast<char>(Protocol::kMagic & 0xff);
+    invalidLength[2] = static_cast<char>(Protocol::Version1);
+    invalidLength[3] = static_cast<char>(Protocol::MessageType::Telemetry);
+    invalidLength[4] = 0;
+    invalidLength[5] = static_cast<char>(Protocol::kMinFrameSize - 1);
+
+    const QByteArray valid = FrameCodec::encode(makeFrame(77));
+    QVERIFY(!valid.isEmpty());
+
+    FrameDecoder decoder;
+    decoder.appendData(invalidLength + valid);
+    QCOMPARE(decoder.eventCount(), 2);
+    QCOMPARE(decoder.takeNextEvent().type, FrameDecoder::EventType::ProtocolError);
+    const FrameDecoder::Event frameEvent = decoder.takeNextEvent();
+    QCOMPARE(frameEvent.type, FrameDecoder::EventType::DecodedFrame);
+    QCOMPARE(frameEvent.frame.sequence, 77U);
 }
 
 void ProtocolCodecTest::rejectsOversizeFrameAndResynchronizes()

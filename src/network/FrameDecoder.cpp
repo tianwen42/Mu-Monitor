@@ -19,6 +19,33 @@ int frameSizeFromHeader(const QByteArray &data)
            | static_cast<int>(static_cast<quint8>(data.at(5)));
 }
 
+int findNextCompleteFrame(const QByteArray &data, int startOffset, int endOffset)
+{
+    const QByteArray magic = magicBytes();
+    const int boundedEnd = qMin(endOffset, data.size() - Protocol::kMinFrameSize);
+    for (int candidate = qMax(1, startOffset); candidate <= boundedEnd; ++candidate) {
+        if (data.mid(candidate, Protocol::kMagicSize) != magic) {
+            continue;
+        }
+        if (data.size() - candidate < Protocol::kHeaderSize) {
+            continue;
+        }
+
+        const int candidateSize = frameSizeFromHeader(data.mid(candidate));
+        if (candidateSize < Protocol::kMinFrameSize
+            || candidateSize > Protocol::kMaxFrameSize
+            || data.size() - candidate < candidateSize) {
+            continue;
+        }
+
+        const DecodeResult result = FrameCodec::decode(data.mid(candidate, candidateSize));
+        if (result.isOk()) {
+            return candidate;
+        }
+    }
+    return -1;
+}
+
 } // namespace
 
 void FrameDecoder::appendData(const QByteArray &data)
@@ -53,6 +80,15 @@ void FrameDecoder::appendData(const QByteArray &data)
 
         const int frameSize = frameSizeFromHeader(m_buffer);
         if (frameSize < Protocol::kMinFrameSize) {
+            const int nextFrame = findNextCompleteFrame(m_buffer, 1, m_buffer.size());
+            if (nextFrame > 0) {
+                m_buffer.remove(0, nextFrame);
+                enqueueError(QStringLiteral("帧长度 %1 小于最小值 %2，丢弃 %3 字节后重新同步")
+                                 .arg(frameSize)
+                                 .arg(Protocol::kMinFrameSize)
+                                 .arg(nextFrame));
+                continue;
+            }
             enqueueError(QStringLiteral("帧长度 %1 小于最小值 %2")
                              .arg(frameSize)
                              .arg(Protocol::kMinFrameSize));
@@ -60,6 +96,15 @@ void FrameDecoder::appendData(const QByteArray &data)
             continue;
         }
         if (frameSize > Protocol::kMaxFrameSize) {
+            const int nextFrame = findNextCompleteFrame(m_buffer, 1, m_buffer.size());
+            if (nextFrame > 0) {
+                m_buffer.remove(0, nextFrame);
+                enqueueError(QStringLiteral("帧长度 %1 超过上限 %2，丢弃 %3 字节后重新同步")
+                                 .arg(frameSize)
+                                 .arg(Protocol::kMaxFrameSize)
+                                 .arg(nextFrame));
+                continue;
+            }
             enqueueError(QStringLiteral("帧长度 %1 超过上限 %2")
                              .arg(frameSize)
                              .arg(Protocol::kMaxFrameSize));
@@ -68,6 +113,13 @@ void FrameDecoder::appendData(const QByteArray &data)
         }
 
         if (m_buffer.size() < frameSize) {
+            const int nextFrame = findNextCompleteFrame(m_buffer, 1, frameSize - 1);
+            if (nextFrame > 0) {
+                m_buffer.remove(0, nextFrame);
+                enqueueError(QStringLiteral("检测到截断或损坏帧，丢弃 %1 字节后重新同步")
+                                 .arg(nextFrame));
+                continue;
+            }
             break;
         }
 
@@ -77,13 +129,33 @@ void FrameDecoder::appendData(const QByteArray &data)
             event.type = EventType::DecodedFrame;
             event.frame = result.frame;
             m_events.enqueue(event);
+            m_buffer.remove(0, frameSize);
         } else {
+            const int nextFrame = findNextCompleteFrame(m_buffer, 1, frameSize - 1);
+            if (nextFrame > 0) {
+                m_buffer.remove(0, nextFrame);
+                enqueueError(QStringLiteral("检测到截断或损坏帧，丢弃 %1 字节后重新同步")
+                                 .arg(nextFrame));
+                continue;
+            }
+
             enqueueError(QStringLiteral("%1：%2")
                              .arg(FrameCodec::statusText(result.status),
                                   protocolVersionName(static_cast<quint8>(m_buffer.at(2)))));
+            m_buffer.remove(0, frameSize);
         }
-        m_buffer.remove(0, frameSize);
     }
+}
+
+void FrameDecoder::finish()
+{
+    if (m_buffer.isEmpty()) {
+        return;
+    }
+
+    enqueueError(QStringLiteral("TCP 流结束时仍有 %1 字节截断帧数据")
+                     .arg(m_buffer.size()));
+    m_buffer.clear();
 }
 
 void FrameDecoder::clear()

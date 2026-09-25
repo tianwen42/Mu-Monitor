@@ -22,6 +22,7 @@ public:
     };
 
     void appendData(const QByteArray &data);
+    void finish();
     void clear();
 
     bool hasEvents() const;
