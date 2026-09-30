@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.30)
 project(Mu-Monitor VERSION 0.1.0 LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql Network LinguistTools)
+find_package(Qt6 6.8.3 REQUIRED COMPONENTS Core Widgets Sql Network LinguistTools)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

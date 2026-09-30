@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $BuildDir = Join-Path $ProjectRoot ("build\check-" + $Configuration.ToLowerInvariant())
-$QtRoot = "D:\Qt\6.11.2\mingw_64"
+$QtRoot = "D:\Qt\6.8.3\mingw_64"
 $QtBin = Join-Path $QtRoot "bin"
 $MingwBin = "D:\Qt\Tools\mingw1310_64\bin"
 $CMakeDir = "D:\Qt\Tools\CMake_64\bin"

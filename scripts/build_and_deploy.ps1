@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$QtRoot = "D:\Qt\6.11.2\mingw_64"
+$QtRoot = "D:\Qt\6.8.3\mingw_64"
 $QtBin = Join-Path $QtRoot "bin"
 $WinDeployQt = Join-Path $QtBin "windeployqt.exe"
 $MingwBin = "D:\Qt\Tools\mingw1310_64\bin"
@@ -160,6 +160,32 @@ if (-not (Test-Path -LiteralPath $PortableFlag -PathType Leaf)) {
 
 $distApp = Join-Path $DistDir $AppExecutableName
 $distSimulator = Join-Path $DistDir $SimulatorExecutableName
+$managedRuntimeItems = @(
+    "Qt6Core.dll",
+    "Qt6Gui.dll",
+    "Qt6Widgets.dll",
+    "Qt6Network.dll",
+    "Qt6Sql.dll",
+    "Qt6Svg.dll",
+    "libgcc_s_seh-1.dll",
+    "libstdc++-6.dll",
+    "libwinpthread-1.dll",
+    "generic",
+    "iconengines",
+    "imageformats",
+    "networkinformation",
+    "platforms",
+    "sqldrivers",
+    "styles",
+    "tls"
+)
+
+Write-Host "Refreshing Qt runtime files..."
+foreach ($item in $managedRuntimeItems) {
+    Remove-DistItem -RelativePath $item
+}
+
+Copy-Item -LiteralPath $builtApp -Destination $distApp -Force
 Copy-Item -LiteralPath $builtApp -Destination $distApp -Force
 Copy-Item -LiteralPath $builtSimulator -Destination $distSimulator -Force
 

@@ -82,9 +82,10 @@ DeviceSimulator / 真实设备
 | 组件 | 版本或说明 |
 |---|---|
 | C++ | C++17 |
-| Qt | Qt 6.5 及以上，当前开发环境 Qt 6.11.2 |
-| 构建系统 | CMake 3.19 及以上 |
+| Qt | Qt 6.8.3 LTS，MinGW 13.1.0 64-bit |
+| 构建系统 | CMake 3.30.5 |
 | 编译器 | MinGW 13.1 64-bit |
+| IDE | Qt Creator 14.x / 15.x，其他兼容 Qt 6.8 的版本也可使用 |
 | 数据库 | SQLite |
 | 测试 | QtTest / CTest |
 | Excel | QXlsx 1.5.1 |
@@ -115,17 +116,18 @@ third_party/   第三方依赖
 ## 构建要求
 
 - Windows 10/11
-- Qt 6.5 或更高版本
+- Qt 6.8.3 LTS，MinGW 13.1.0 64-bit
 - Qt Core、Widgets、Sql、Network、LinguistTools 和 Test 模块
 - MinGW 64-bit 或兼容工具链
-- CMake 3.19 或更高版本
+- CMake 3.30.5
 - Ninja
+- Qt Creator 14.x / 15.x，其他兼容 Qt 6.8 的版本也可使用
 - Git
 
 当前脚本默认使用以下路径，其他环境需要相应修改：
 
 ```text
-D:\Qt\6.11.2\mingw_64
+D:\Qt\6.8.3\mingw_64
 D:\Qt\Tools\mingw1310_64
 D:\Qt\Tools\CMake_64
 D:\Qt\Tools\Ninja
@@ -143,11 +145,11 @@ D:\Qt\Tools\Ninja
 ### 使用命令行
 
 ```powershell
-$env:PATH = "D:\Qt\6.11.2\mingw_64\bin;D:\Qt\Tools\mingw1310_64\bin;D:\Qt\Tools\CMake_64\bin;D:\Qt\Tools\Ninja;" + $env:PATH
+$env:PATH = "D:\Qt\6.8.3\mingw_64\bin;D:\Qt\Tools\mingw1310_64\bin;D:\Qt\Tools\CMake_64\bin;D:\Qt\Tools\Ninja;" + $env:PATH
 
 cmake -S . -B build -G Ninja `
   -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_PREFIX_PATH=D:\Qt\6.11.2\mingw_64
+  -DCMAKE_PREFIX_PATH=D:\Qt\6.8.3\mingw_64
 
 cmake --build build
 ```
