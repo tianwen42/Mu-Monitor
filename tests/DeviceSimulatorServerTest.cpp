@@ -25,6 +25,7 @@ private slots:
     void tracksClientCount();
     void rejectsOccupiedPort();
     void rejectsUnknownDeviceScenario();
+    void devicesCanBeStartedAndStoppedIndependently();
 
 private:
     QJsonObject readJsonLine(QTcpSocket &client, int timeoutMs = 3000);
@@ -352,10 +353,67 @@ void DeviceSimulatorServerTest::rejectsOccupiedPort()
 void DeviceSimulatorServerTest::rejectsUnknownDeviceScenario()
 {
     DeviceSimulatorServer server;
-    QCOMPARE(server.devices().size(), 4);
+    QCOMPARE(server.devices().size(), 20);
     QVERIFY(!server.setScenario(QStringLiteral("DEV-999"),
                                 DeviceSimulatorServer::Scenario::HighTemperature));
     QVERIFY(server.scenarioText(QStringLiteral("DEV-999")).isEmpty());
+}
+
+void DeviceSimulatorServerTest::devicesCanBeStartedAndStoppedIndependently()
+{
+    DeviceSimulatorServer server;
+    QCOMPARE(server.devices().size(), 20);
+    QVERIFY(server.isDeviceRunning(QStringLiteral("DEV-001")));
+    QVERIFY(server.setDeviceRunning(QStringLiteral("DEV-001"), false));
+    QVERIFY(!server.isDeviceRunning(QStringLiteral("DEV-001")));
+
+    server.setSendIntervalMs(20);
+    QString errorMessage;
+    QVERIFY2(server.start(QHostAddress::LocalHost, 0, &errorMessage),
+             qPrintable(errorMessage));
+
+    QTcpSocket client;
+    client.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(client.waitForConnected(1000));
+
+    bool sawHeartbeat = false;
+    bool sawTelemetry = false;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 1200) {
+        const QByteArray encoded = readRawFrame(client, 300);
+        if (encoded.isEmpty()) {
+            continue;
+        }
+        const DecodeResult result = FrameCodec::decode(encoded);
+        if (result.status != DecodeStatus::Ok
+            || result.frame.deviceId != QStringLiteral("DEV-001")) {
+            continue;
+        }
+        sawHeartbeat = sawHeartbeat
+            || result.frame.messageType == Protocol::MessageType::Heartbeat;
+        sawTelemetry = sawTelemetry
+            || result.frame.messageType == Protocol::MessageType::Telemetry;
+    }
+    QVERIFY(sawHeartbeat);
+    QVERIFY(!sawTelemetry);
+
+    QVERIFY(server.setDeviceRunning(QStringLiteral("DEV-001"), true));
+    bool sawTelemetryAfterStart = false;
+    timer.restart();
+    while (timer.elapsed() < 1200 && !sawTelemetryAfterStart) {
+        const QByteArray encoded = readRawFrame(client, 300);
+        if (encoded.isEmpty()) {
+            continue;
+        }
+        const DecodeResult result = FrameCodec::decode(encoded);
+        if (result.status == DecodeStatus::Ok
+            && result.frame.deviceId == QStringLiteral("DEV-001")
+            && result.frame.messageType == Protocol::MessageType::Telemetry) {
+            sawTelemetryAfterStart = true;
+        }
+    }
+    QVERIFY(sawTelemetryAfterStart);
 }
 
 QTEST_MAIN(DeviceSimulatorServerTest)

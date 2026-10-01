@@ -35,6 +35,7 @@ public:
         double pressure = 0.0;
         double speed = 0.0;
         double voltage = 0.0;
+        bool running = true;
     };
 
     explicit DeviceSimulatorServer(QObject *parent = nullptr);
@@ -47,6 +48,8 @@ public:
     QList<Device> devices() const;
     bool setScenario(const QString &deviceId, Scenario scenario);
     QString scenarioText(const QString &deviceId) const;
+    bool setDeviceRunning(const QString &deviceId, bool running);
+    bool isDeviceRunning(const QString &deviceId) const;
     WireFormat wireFormat() const;
     void setWireFormat(WireFormat format);
     void setSendIntervalMs(int intervalMs);
@@ -67,6 +70,7 @@ private:
     Device *findDevice(const QString &deviceId);
     const Device *findDevice(const QString &deviceId) const;
     QByteArray createJsonPayload(const Device &device) const;
+    QByteArray createHeartbeatPayload(const Device &device) const;
     QString scenarioName(Scenario scenario) const;
 
     QTcpServer m_server;

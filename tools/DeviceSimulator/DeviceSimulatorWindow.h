@@ -29,6 +29,8 @@ private slots:
     void updateClientCount(int count);
     void updateDeviceTable();
     void updateScenarioButtons();
+    void startSelectedDevice();
+    void stopSelectedDevice();
 
 private:
     void setupUi();
@@ -36,6 +38,7 @@ private:
     void appendLog(const QString &message);
     void setScenario(DeviceSimulatorServer::Scenario scenario);
     QString selectedDeviceId() const;
+    bool selectedDeviceRunning() const;
 
     DeviceSimulatorServer m_server;
     QLineEdit *m_hostEdit = nullptr;
@@ -43,6 +46,8 @@ private:
     QPushButton *m_startButton = nullptr;
     QLabel *m_clientCountLabel = nullptr;
     QTableWidget *m_deviceTable = nullptr;
+    QPushButton *m_startDeviceButton = nullptr;
+    QPushButton *m_stopDeviceButton = nullptr;
     QPushButton *m_highTemperatureButton = nullptr;
     QPushButton *m_highPressureButton = nullptr;
     QPushButton *m_offlineButton = nullptr;

@@ -13,7 +13,7 @@
 DeviceSimulatorServer::DeviceSimulatorServer(QObject *parent)
     : QObject(parent)
 {
-    for (int i = 1; i <= 4; ++i) {
+    for (int i = 1; i <= 20; ++i) {
         Device device;
         device.id = QStringLiteral("DEV-%1").arg(i, 3, 10, QLatin1Char('0'));
         device.name = QStringLiteral("模拟设备 %1").arg(i, 3, 10, QLatin1Char('0'));
@@ -110,6 +110,35 @@ bool DeviceSimulatorServer::setScenario(const QString &deviceId, Scenario scenar
     return true;
 }
 
+bool DeviceSimulatorServer::setDeviceRunning(const QString &deviceId, bool running)
+{
+    Device *device = findDevice(deviceId);
+    if (!device) {
+        return false;
+    }
+
+    if (device->running == running) {
+        return true;
+    }
+
+    device->running = running;
+    if (running) {
+        device->scenario = Scenario::Normal;
+    }
+    emit devicesChanged();
+    emit logMessage(QStringLiteral("[设备] %1 %2")
+                        .arg(deviceId,
+                             running ? QStringLiteral("已启动")
+                                     : QStringLiteral("已停止")));
+    return true;
+}
+
+bool DeviceSimulatorServer::isDeviceRunning(const QString &deviceId) const
+{
+    const Device *device = findDevice(deviceId);
+    return device && device->running;
+}
+
 QString DeviceSimulatorServer::scenarioText(const QString &deviceId) const
 {
     const Device *device = findDevice(deviceId);
@@ -172,9 +201,34 @@ void DeviceSimulatorServer::sendTelemetry()
     auto jitter = [](double amplitude) {
         return (QRandomGenerator::global()->generateDouble() - 0.5) * amplitude;
     };
+    auto sendPayload = [this](const QByteArray &payload) {
+        for (QTcpSocket *client : m_clients) {
+            if (client->state() == QAbstractSocket::ConnectedState) {
+                client->write(payload);
+            }
+        }
+    };
 
     bool disconnectRequested = false;
     for (Device &device : m_devices) {
+        if (!device.running) {
+            QByteArray heartbeatPayload = createHeartbeatPayload(device);
+            if (m_wireFormat == WireFormat::ProtocolV1) {
+                QString errorMessage;
+                heartbeatPayload = FrameEncoder::encodeHeartbeat(
+                    device.id, m_sequence++, heartbeatPayload, &errorMessage);
+                if (heartbeatPayload.isEmpty()) {
+                    emit logMessage(QStringLiteral("[编码] %1 心跳编码失败：%2")
+                                        .arg(device.id, errorMessage));
+                    continue;
+                }
+            } else {
+                heartbeatPayload.append('\n');
+            }
+            sendPayload(heartbeatPayload);
+            continue;
+        }
+
         if (device.scenario == Scenario::ActiveDisconnect) {
             disconnectRequested = true;
             continue;
@@ -219,11 +273,7 @@ void DeviceSimulatorServer::sendTelemetry()
             payload.append('\n');
         }
 
-        for (QTcpSocket *client : m_clients) {
-            if (client->state() == QAbstractSocket::ConnectedState) {
-                client->write(payload);
-            }
-        }
+        sendPayload(payload);
 
         if (!m_clients.isEmpty()) {
             emit logMessage(QStringLiteral("[发送] %1 %2，温度=%3 °C，压力=%4 MPa%5")
@@ -278,6 +328,21 @@ const DeviceSimulatorServer::Device *DeviceSimulatorServer::findDevice(
         }
     }
     return nullptr;
+}
+
+QByteArray DeviceSimulatorServer::createHeartbeatPayload(
+    const Device &device) const
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("type"), QStringLiteral("heartbeat"));
+    object.insert(QStringLiteral("version"), 1);
+    object.insert(QStringLiteral("timestamp"),
+                  QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    object.insert(QStringLiteral("deviceId"), device.id);
+    object.insert(QStringLiteral("online"), true);
+    object.insert(QStringLiteral("collecting"), false);
+    object.insert(QStringLiteral("latencyMs"), 0);
+    return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 
 QByteArray DeviceSimulatorServer::createJsonPayload(const Device &device) const

@@ -20,6 +20,21 @@ QByteArray FrameEncoder::encodeTelemetry(const QString &deviceId,
     return FrameCodec::encode(frame, errorMessage);
 }
 
+QByteArray FrameEncoder::encodeHeartbeat(const QString &deviceId,
+                                         quint32 sequence,
+                                         const QByteArray &payload,
+                                         QString *errorMessage)
+{
+    Frame frame;
+    frame.version = Protocol::Version1;
+    frame.messageType = Protocol::MessageType::Heartbeat;
+    frame.sequence = sequence;
+    frame.deviceId = deviceId;
+    frame.timestampUtcMs = QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+    frame.payload = payload;
+    return FrameCodec::encode(frame, errorMessage);
+}
+
 QByteArray FrameEncoder::encodeTelemetryWithBadCrc(const QString &deviceId,
                                                    quint32 sequence,
                                                    const QByteArray &payload,

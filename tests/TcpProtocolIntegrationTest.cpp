@@ -14,7 +14,7 @@ class TcpProtocolIntegrationTest : public QObject
 
 private slots:
     void receivesLiveProtocolFrames();
-    void adapterDiscoversFourSimulatorDevices();
+    void adapterDiscoversAllSimulatorDevices();
     void isolatesBadCrcFrameAndKeepsReceiving();
     void recoversAfterSimulatorDisconnectsClient();
 };
@@ -32,7 +32,7 @@ void TcpProtocolIntegrationTest::receivesLiveProtocolFrames()
     QSignalSpy frameSpy(&source, &TcpDeviceDataSource::frameReceived);
     source.connectToDevice(QStringLiteral("127.0.0.1"), server.serverPort());
 
-    QTRY_VERIFY_WITH_TIMEOUT(frameSpy.count() >= 8, 2500);
+    QTRY_VERIFY_WITH_TIMEOUT(frameSpy.count() >= 20, 2500);
 
     QSet<QString> deviceIds;
     for (const QList<QVariant> &arguments : frameSpy) {
@@ -48,13 +48,13 @@ void TcpProtocolIntegrationTest::receivesLiveProtocolFrames()
         QVERIFY(payload.isObject());
         QVERIFY(payload.object().contains(QStringLiteral("temperature")));
     }
-    QCOMPARE(deviceIds.size(), 4);
+    QCOMPARE(deviceIds.size(), 20);
 
     source.disconnectFromDevice();
     QTRY_COMPARE_WITH_TIMEOUT(source.state(), TcpConnectionState::Disconnected, 1000);
 }
 
-void TcpProtocolIntegrationTest::adapterDiscoversFourSimulatorDevices()
+void TcpProtocolIntegrationTest::adapterDiscoversAllSimulatorDevices()
 {
     DeviceSimulatorServer server;
     server.setSendIntervalMs(30);
@@ -67,16 +67,16 @@ void TcpProtocolIntegrationTest::adapterDiscoversFourSimulatorDevices()
     adapter.setEndpoint(QStringLiteral("127.0.0.1"), server.serverPort());
     QSignalSpy discoverySpy(&adapter, &IDeviceDataSource::deviceDiscovered);
     QVERIFY(adapter.start());
-    QTRY_VERIFY_WITH_TIMEOUT(discoverySpy.count() >= 4, 2500);
+    QTRY_VERIFY_WITH_TIMEOUT(discoverySpy.count() >= 20, 2500);
 
     QSet<QString> deviceIds;
     for (const DeviceInfo &device : adapter.devices()) {
         deviceIds.insert(device.deviceId);
     }
-    QCOMPARE(deviceIds.size(), 4);
+    QCOMPARE(deviceIds.size(), 20);
     QVERIFY(deviceIds.contains(QStringLiteral("DEV-001")));
-    QVERIFY(deviceIds.contains(QStringLiteral("DEV-004")));
-    QVERIFY(!deviceIds.contains(QStringLiteral("DEV-005")));
+    QVERIFY(deviceIds.contains(QStringLiteral("DEV-020")));
+    QVERIFY(!deviceIds.contains(QStringLiteral("DEV-021")));
     adapter.stop();
 }
 
@@ -110,7 +110,7 @@ void TcpProtocolIntegrationTest::isolatesBadCrcFrameAndKeepsReceiving()
     QVERIFY(server.setScenario(QStringLiteral("DEV-001"),
                                DeviceSimulatorServer::Scenario::Normal));
     frameSpy.clear();
-    QTRY_VERIFY_WITH_TIMEOUT(frameSpy.count() >= 4, 1500);
+    QTRY_VERIFY_WITH_TIMEOUT(frameSpy.count() >= 40, 1500);
     bool recovered = false;
     for (const QList<QVariant> &arguments : frameSpy) {
         if (qvariant_cast<Frame>(arguments.at(0)).deviceId == QStringLiteral("DEV-001")) {

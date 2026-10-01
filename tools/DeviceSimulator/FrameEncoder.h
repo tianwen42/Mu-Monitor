@@ -14,4 +14,8 @@ public:
                                                 quint32 sequence,
                                                 const QByteArray &payload,
                                                 QString *errorMessage = nullptr);
+    static QByteArray encodeHeartbeat(const QString &deviceId,
+                                      quint32 sequence,
+                                      const QByteArray &payload,
+                                      QString *errorMessage = nullptr);
 };

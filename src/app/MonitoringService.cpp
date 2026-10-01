@@ -313,6 +313,11 @@ void MonitoringService::processTelemetry(const QList<TelemetrySample> &samples)
         }
 
         setDeviceOnlineState(sample.deviceId, true);
+        if (m_collectionState == CollectionState::Running
+            && !m_collecting.value(sample.deviceId, false)) {
+            m_collecting[sample.deviceId] = true;
+            emit deviceStateChanged(sample.deviceId, true, true);
+        }
         m_alarmEngine->processTelemetry(sample);
         records.append(toTelemetryRecord(sample));
     }

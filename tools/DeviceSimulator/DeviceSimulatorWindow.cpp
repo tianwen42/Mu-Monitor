@@ -75,10 +75,11 @@ void DeviceSimulatorWindow::setupUi()
     auto *deviceLayout = new QVBoxLayout(deviceGroup);
     deviceLayout->setSpacing(10);
 
-    m_deviceTable = new QTableWidget(0, 6, deviceGroup);
+    m_deviceTable = new QTableWidget(0, 7, deviceGroup);
     m_deviceTable->setHorizontalHeaderLabels({
         QStringLiteral("设备编号"),
         QStringLiteral("设备名称"),
+        QStringLiteral("运行状态"),
         QStringLiteral("场景"),
         QStringLiteral("温度"),
         QStringLiteral("压力"),
@@ -92,8 +93,16 @@ void DeviceSimulatorWindow::setupUi()
     m_deviceTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     deviceLayout->addWidget(m_deviceTable);
 
-    auto *scenarioLayout = new QHBoxLayout;
-    scenarioLayout->addWidget(new QLabel(QStringLiteral("选中设备场景"), deviceGroup));
+    auto *deviceControlLayout = new QHBoxLayout;
+    deviceControlLayout->addWidget(new QLabel(QStringLiteral("选中设备控制"), deviceGroup));
+    m_startDeviceButton = new QPushButton(QStringLiteral("启动设备"), deviceGroup);
+    m_stopDeviceButton = new QPushButton(QStringLiteral("停止设备"), deviceGroup);
+    deviceControlLayout->addWidget(m_startDeviceButton);
+    deviceControlLayout->addWidget(m_stopDeviceButton);
+    deviceControlLayout->addSpacing(16);
+
+    auto *scenarioLayout = deviceControlLayout;
+    scenarioLayout->addWidget(new QLabel(QStringLiteral("模拟操作"), deviceGroup));
     m_highTemperatureButton = new QPushButton(QStringLiteral("高温"), deviceGroup);
     m_highPressureButton = new QPushButton(QStringLiteral("高压"), deviceGroup);
     m_offlineButton = new QPushButton(QStringLiteral("离线"), deviceGroup);
@@ -145,6 +154,10 @@ void DeviceSimulatorWindow::setupConnections()
             this, &DeviceSimulatorWindow::toggleServer);
     connect(m_deviceTable, &QTableWidget::itemSelectionChanged,
             this, &DeviceSimulatorWindow::updateScenarioButtons);
+    connect(m_startDeviceButton, &QPushButton::clicked,
+            this, &DeviceSimulatorWindow::startSelectedDevice);
+    connect(m_stopDeviceButton, &QPushButton::clicked,
+            this, &DeviceSimulatorWindow::stopSelectedDevice);
     connect(m_highTemperatureButton, &QPushButton::clicked, this, [this]() {
         setScenario(DeviceSimulatorServer::Scenario::HighTemperature);
     });
@@ -247,13 +260,19 @@ void DeviceSimulatorWindow::updateDeviceTable()
         idItem->setData(Qt::UserRole, device.id);
         m_deviceTable->setItem(row, 0, idItem);
         m_deviceTable->setItem(row, 1, new QTableWidgetItem(device.name));
-        m_deviceTable->setItem(row, 2, new QTableWidgetItem(scenario));
+        auto *runItem = new QTableWidgetItem(
+            device.running ? QStringLiteral("运行中") : QStringLiteral("已停止"));
+        runItem->setForeground(device.running
+                                   ? QColor(QStringLiteral("#22c55e"))
+                                   : QColor(QStringLiteral("#94a3b8")));
+        m_deviceTable->setItem(row, 2, runItem);
+        m_deviceTable->setItem(row, 3, new QTableWidgetItem(scenario));
         m_deviceTable->setItem(
-            row, 3, new QTableWidgetItem(QStringLiteral("%1 °C").arg(device.temperature, 0, 'f', 1)));
+            row, 4, new QTableWidgetItem(QStringLiteral("%1 °C").arg(device.temperature, 0, 'f', 1)));
         m_deviceTable->setItem(
-            row, 4, new QTableWidgetItem(QStringLiteral("%1 MPa").arg(device.pressure, 0, 'f', 2)));
+            row, 5, new QTableWidgetItem(QStringLiteral("%1 MPa").arg(device.pressure, 0, 'f', 2)));
         m_deviceTable->setItem(
-            row, 5, new QTableWidgetItem(QStringLiteral("%1 rpm").arg(device.speed, 0, 'f', 0)));
+            row, 6, new QTableWidgetItem(QStringLiteral("%1 rpm").arg(device.speed, 0, 'f', 0)));
 
         QColor color(QStringLiteral("#cbd5e1"));
         if (device.scenario == DeviceSimulatorServer::Scenario::Offline) {
@@ -263,7 +282,7 @@ void DeviceSimulatorWindow::updateDeviceTable()
         } else {
             color = QColor(QStringLiteral("#22c55e"));
         }
-        m_deviceTable->item(row, 2)->setForeground(color);
+        m_deviceTable->item(row, 3)->setForeground(color);
 
         if (device.id == selected) {
             m_deviceTable->selectRow(row);
@@ -280,12 +299,15 @@ void DeviceSimulatorWindow::updateDeviceTable()
 void DeviceSimulatorWindow::updateScenarioButtons()
 {
     const bool hasSelection = !selectedDeviceId().isEmpty();
-    m_highTemperatureButton->setEnabled(hasSelection);
-    m_highPressureButton->setEnabled(hasSelection);
-    m_offlineButton->setEnabled(hasSelection);
-    m_badCrcButton->setEnabled(hasSelection);
-    m_disconnectButton->setEnabled(hasSelection);
-    m_normalButton->setEnabled(hasSelection);
+    const bool running = selectedDeviceRunning();
+    m_startDeviceButton->setEnabled(hasSelection && !running);
+    m_stopDeviceButton->setEnabled(hasSelection && running);
+    m_highTemperatureButton->setEnabled(hasSelection && running);
+    m_highPressureButton->setEnabled(hasSelection && running);
+    m_offlineButton->setEnabled(hasSelection && running);
+    m_badCrcButton->setEnabled(hasSelection && running);
+    m_disconnectButton->setEnabled(hasSelection && running);
+    m_normalButton->setEnabled(hasSelection && running);
 }
 
 void DeviceSimulatorWindow::appendLog(const QString &message)
@@ -303,6 +325,27 @@ void DeviceSimulatorWindow::setScenario(DeviceSimulatorServer::Scenario scenario
         return;
     }
     m_server.setScenario(deviceId, scenario);
+}
+
+void DeviceSimulatorWindow::startSelectedDevice()
+{
+    const QString deviceId = selectedDeviceId();
+    if (!deviceId.isEmpty()) {
+        m_server.setDeviceRunning(deviceId, true);
+    }
+}
+
+void DeviceSimulatorWindow::stopSelectedDevice()
+{
+    const QString deviceId = selectedDeviceId();
+    if (!deviceId.isEmpty()) {
+        m_server.setDeviceRunning(deviceId, false);
+    }
+}
+
+bool DeviceSimulatorWindow::selectedDeviceRunning() const
+{
+    return m_server.isDeviceRunning(selectedDeviceId());
 }
 
 QString DeviceSimulatorWindow::selectedDeviceId() const
