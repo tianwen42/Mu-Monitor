@@ -169,6 +169,7 @@ bool MonitoringService::start()
     if (m_dataSource->isRunning()) {
         setConnectionState(ConnectionState::Connected);
         setCollectionState(CollectionState::Running);
+        setAllDeviceCollection(true);
         m_offlineCheckTimer.start();
         return true;
     }
@@ -184,6 +185,7 @@ bool MonitoringService::start()
         setConnectionState(ConnectionState::Connected);
     }
     setCollectionState(CollectionState::Running);
+    setAllDeviceCollection(true);
     m_offlineCheckTimer.start();
     return true;
 }
@@ -202,6 +204,8 @@ void MonitoringService::stop()
     m_dataSource->stop();
     setConnectionState(ConnectionState::Disconnected);
     setCollectionState(CollectionState::Stopped);
+    markAllDevicesOffline();
+    setAllDeviceCollection(false);
 }
 
 bool MonitoringService::pauseCollection()
@@ -213,6 +217,7 @@ bool MonitoringService::pauseCollection()
         return false;
     }
     setCollectionState(CollectionState::Paused);
+    setAllDeviceCollection(false);
     return true;
 }
 
@@ -225,6 +230,7 @@ bool MonitoringService::resumeCollection()
         return false;
     }
     setCollectionState(CollectionState::Running);
+    setAllDeviceCollection(true);
     return true;
 }
 
@@ -306,6 +312,7 @@ void MonitoringService::processTelemetry(const QList<TelemetrySample> &samples)
             continue;
         }
 
+        setDeviceOnlineState(sample.deviceId, true);
         m_alarmEngine->processTelemetry(sample);
         records.append(toTelemetryRecord(sample));
     }
@@ -338,6 +345,11 @@ void MonitoringService::processHeartbeats(const QList<HeartbeatRecord> &heartbea
 
 void MonitoringService::handleSourceConnectionState(ConnectionState state)
 {
+    if (state == ConnectionState::Disconnected
+        || state == ConnectionState::Reconnecting
+        || state == ConnectionState::Stopping) {
+        markAllDevicesOffline();
+    }
     setConnectionState(state);
 }
 
@@ -354,6 +366,47 @@ void MonitoringService::setConnectionState(ConnectionState state)
     }
     m_connectionState = state;
     emit connectionStateChanged(state);
+}
+
+void MonitoringService::setDeviceOnlineState(const QString &deviceId, bool online)
+{
+    auto it = m_online.find(deviceId);
+    if (it == m_online.end() || it.value() == online) {
+        return;
+    }
+    it.value() = online;
+    emit deviceStateChanged(
+        deviceId, online, m_collecting.value(deviceId, false));
+    emit onlineDeviceCountChanged(onlineDeviceCount());
+}
+
+void MonitoringService::markAllDevicesOffline()
+{
+    bool changed = false;
+    for (auto it = m_online.begin(); it != m_online.end(); ++it) {
+        if (!it.value()) {
+            continue;
+        }
+        it.value() = false;
+        changed = true;
+        emit deviceStateChanged(
+            it.key(), false, m_collecting.value(it.key(), false));
+    }
+    if (changed) {
+        emit onlineDeviceCountChanged(onlineDeviceCount());
+    }
+}
+
+void MonitoringService::setAllDeviceCollection(bool collecting)
+{
+    for (auto it = m_collecting.begin(); it != m_collecting.end(); ++it) {
+        if (it.value() == collecting) {
+            continue;
+        }
+        it.value() = collecting;
+        emit deviceStateChanged(
+            it.key(), m_online.value(it.key(), false), collecting);
+    }
 }
 
 void MonitoringService::setCollectionState(CollectionState state)

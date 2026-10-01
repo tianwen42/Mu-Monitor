@@ -69,6 +69,9 @@ private:
     void initializeAlarmEngine(AlarmEngine *alarmEngine);
     void setConnectionState(ConnectionState state);
     void setCollectionState(CollectionState state);
+    void setDeviceOnlineState(const QString &deviceId, bool online);
+    void markAllDevicesOffline();
+    void setAllDeviceCollection(bool collecting);
     TelemetryRecord toTelemetryRecord(const TelemetrySample &sample) const;
     bool deviceHasActiveAlarm(const QString &deviceId) const;
 

@@ -332,6 +332,7 @@ private slots:
     void appControllerForwardsAlarmLifecycle();
     void alarmRulesUsePersistedSettings();
     void controllerBuildsDynamicDeviceList();
+    void sourceDisconnectMarksDevicesOffline();
     void appControllerForwardsCommands();
     void controllerDestructorStopsSource();
     void controllerSubmitsPersistenceAsynchronously();
@@ -435,6 +436,32 @@ void ApplicationLayerTest::monitoringServiceDrivesAlarmLifecycle()
     QCOMPARE(transitions.at(2).second, AlarmState::Cleared);
     QCOMPARE(transitions.at(3).first, AlarmState::Cleared);
     QCOMPARE(transitions.at(3).second, AlarmState::Normal);
+}
+
+void ApplicationLayerTest::sourceDisconnectMarksDevicesOffline()
+{
+    const QDateTime now = utc(QStringLiteral("2026-10-01T09:00:00Z"));
+    FakeDataSource source;
+    MonitoringService service(&source);
+    service.setDevices({makeDevice(QStringLiteral("DEV-001"))});
+    QVERIFY(service.start());
+    QVERIFY(service.isDeviceOnline(QStringLiteral("DEV-001")));
+    QVERIFY(service.isDeviceCollecting(QStringLiteral("DEV-001")));
+
+    source.stop();
+    QVERIFY(!service.isDeviceOnline(QStringLiteral("DEV-001")));
+    QVERIFY(service.isDeviceCollecting(QStringLiteral("DEV-001")));
+
+    QVERIFY(source.start());
+    QVERIFY(service.start());
+    source.emitTelemetry(
+        {temperatureSample(QStringLiteral("DEV-001"), 65.0, now)});
+    QVERIFY(service.isDeviceOnline(QStringLiteral("DEV-001")));
+    QVERIFY(service.isDeviceCollecting(QStringLiteral("DEV-001")));
+
+    service.stop();
+    QVERIFY(!service.isDeviceOnline(QStringLiteral("DEV-001")));
+    QVERIFY(!service.isDeviceCollecting(QStringLiteral("DEV-001")));
 }
 
 void ApplicationLayerTest::controllerBuildsDynamicDeviceList()
