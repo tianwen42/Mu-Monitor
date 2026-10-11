@@ -4,6 +4,16 @@ Windows 单机工业设备监控与告警上位机，基于 C++17 和 Qt 6 Widge
 
 支持 TCP 自定义协议、设备模拟、实时监控、SQLite 历史存储、告警生命周期、用户权限和 Excel 导出。
 
+## Screenshots
+
+监控主界面：
+
+![Mu-Monitor 监控主界面](docs/mainWindow.png)
+
+设备模拟器（20 台设备独立启停、故障注入与主动断开）：
+
+![DeviceSimulator 设备模拟器](docs/Simulator.png)
+
 ## Features
 
 - Qt Widgets 桌面界面，支持总览、实时监控、告警中心、历史数据和系统设置
