@@ -96,3 +96,14 @@ CMakeLists.txt.user*
 
 # 本地学习笔记（保留在磁盘上，不随仓库发布）
 /docs/LEARNING*.md
+
+# 构建与测试日志
+*.log
+*.tmp
+
+# CMake 与编辑器本地产物
+compile_commands.json
+CMakeUserPresets.json
+/.qtc_clangd/
+/.vscode/
+/.idea/
