@@ -93,3 +93,6 @@ CMakeLists.txt.user*
 
 # Local reference project
 /参考项目/
+
+# 本地学习笔记（保留在磁盘上，不随仓库发布）
+/docs/LEARNING*.md
